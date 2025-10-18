@@ -24,6 +24,8 @@
   let debugLeftImage = $state<string | null>(null);
   let debugRightImage = $state<string | null>(null);
   let showDebug = $state(false);
+  let countdownSeconds = $state(0);
+  let countdownInterval = $state<number | null>(null);
 
   // Démarrer la caméra automatiquement
   async function initCamera(): Promise<void> {
@@ -206,7 +208,7 @@
     }
   }
 
-  // Gestion du clic droit pour relancer l'analyse
+  // Gestion du clic droit pour relancer l'analyse avec countdown
   async function handleContextMenu(event: MouseEvent): Promise<void> {
     event.preventDefault(); // Empêche le menu contextuel
 
@@ -215,7 +217,7 @@
       return;
     }
 
-    // Si on est en lecture/pause/ready, on relance directement le traitement
+    // Si on est en lecture/pause/ready, on lance le countdown
     if (appState === 'ready' || appState === 'playing' || appState === 'paused') {
       // Nettoyer l'ancien audio
       if (audioUrl) {
@@ -229,16 +231,31 @@
       
       extractedText = '';
       rawOcrText = '';
-      statusMessage = 'Préparation de la nouvelle capture...';
       progressPercent = 0;
       
-      // Relancer caméra silencieusement
+      // Lancer le countdown de 3 secondes
+      countdownSeconds = 3;
+      statusMessage = `📸 Nouvelle capture dans ${countdownSeconds}s...`;
+      
+      // Relancer la caméra en arrière-plan
       await initCamera();
       
-      // Attendre que la caméra soit stable puis lancer le traitement automatiquement
-      setTimeout(() => {
-        startProcessing();
-      }, 800);
+      // Countdown
+      countdownInterval = window.setInterval(() => {
+        countdownSeconds--;
+        
+        if (countdownSeconds > 0) {
+          statusMessage = `📸 Nouvelle capture dans ${countdownSeconds}s...`;
+        } else {
+          // Countdown terminé, lancer la capture
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          countdownSeconds = 0;
+          startProcessing();
+        }
+      }, 1000);
     }
   }
 
@@ -333,6 +350,9 @@
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
+      if (countdownInterval) {
+        clearInterval(countdownInterval);
+      }
     };
   });
 
@@ -353,9 +373,18 @@
       <div class="center-line"></div>
       <canvas bind:this={canvas} class="hidden"></canvas>
       
-      <div class="camera-hint">
-        <p class="hint-text">👆 Cliquez n'importe où pour capturer</p>
-      </div>
+      {#if countdownSeconds > 0}
+        <div class="countdown-overlay">
+          <div class="countdown-circle">
+            <span class="countdown-number">{countdownSeconds}</span>
+          </div>
+          <p class="countdown-text">{statusMessage}</p>
+        </div>
+      {:else}
+        <div class="camera-hint">
+          <p class="hint-text">👆 Cliquez n'importe où pour capturer</p>
+        </div>
+      {/if}
       
       <div class="version-corner">{APP_VERSION}</div>
     </div>
@@ -538,6 +567,58 @@
     padding: 6px 14px;
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  .countdown-overlay {
+    position: relative;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .countdown-circle {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(15px);
+    border: 4px solid white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
+    animation: pulse-countdown 1s infinite;
+  }
+
+  @keyframes pulse-countdown {
+    0%, 100% { 
+      transform: scale(1);
+      box-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
+    }
+    50% { 
+      transform: scale(1.1);
+      box-shadow: 0 0 50px rgba(255, 255, 255, 0.8);
+    }
+  }
+
+  .countdown-number {
+    font-size: 64px;
+    font-weight: 700;
+    color: white;
+    text-shadow: 0 0 20px rgba(255, 255, 255, 0.8);
+  }
+
+  .countdown-text {
+    font-size: 20px;
+    font-weight: 600;
+    color: white;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(10px);
+    padding: 12px 30px;
+    border-radius: 20px;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
   }
 
   .processing-screen {

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import OcrScanner from '$lib/components/OcrScanner.svelte';
+  import Scanner from '$lib/components/Scanner.svelte';
 </script>
 
 <svelte:head>
-  <title>OCR Scanner PWA</title>
+  <title>Saraconte</title>
 </svelte:head>
 
-<OcrScanner />
+<Scanner />
