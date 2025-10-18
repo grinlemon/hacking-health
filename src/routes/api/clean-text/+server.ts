@@ -29,6 +29,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 ⚠️ NE JAMAIS :
 - Ajouter du contenu qui n'existe pas dans le texte original
+- Supprimer des paragraphes entiers
 - Résumer ou raccourcir le texte
 - Paraphraser ou reformuler (sauf si nécessaire pour corriger une erreur OCR)
 
@@ -39,18 +40,17 @@ export const POST: RequestHandler = async ({ request }) => {
    - Corriger "vv" en "w", "c" mal placé en "e"
    - Exemple : "1e ch4t" → "le chat"
 
-2. **Supprimer TOUS les artefacts parasites :**
-   - Lettres isolées sans sens : "h h", "l l", "aa", "ii", "nn"
-   - Caractères bizarres : "|", "~", "^", "_", "»", "«" seuls
-   - Tirets multiples : "---", "___"
-   - Points suspensifs mal formés : ". . ." → "..."
-   - Numéros de page isolés
-   - Espaces multiples
+2. **Supprimer UNIQUEMENT les artefacts parasites évidents :**
+   - Lettres isolées répétées : "h h h", "l l l", "aa aa"
+   - Caractères bizarres seuls : "|", "~", "^", "_" isolés
+   - Tirets multiples : "---", "___" (sauf "--- PAGE SUIVANTE ---")
+   - Numéros de page isolés sur une ligne
+   - Espaces multiples → un seul espace
 
 3. **Reformater en paragraphes fluides :**
    - Supprimer les sauts de ligne au milieu d'une phrase
    - Fusionner les lignes qui appartiennent au même paragraphe
-   - Garder UN SEUL saut de ligne entre paragraphes différents
+   - Garder les sauts de ligne entre paragraphes distincts
    - Le texte doit être continu et agréable à lire
 
 4. **Corriger la ponctuation :**
@@ -58,18 +58,14 @@ export const POST: RequestHandler = async ({ request }) => {
    - "mot,autre" → "mot, autre"
    - Gérer les tirets de césure : "indépen-\ndance" → "indépendance"
 
-5. **Corriger LÉGÈREMENT si le sens est altéré :**
-   - Si une phrase n'a pas de sens à cause de l'OCR, corriger pour rendre cohérent
-   - Exemple : "Le chat mange de poison" → "Le chat mange du poisson" (si contexte évident)
-   - MAIS : en cas de doute, ne rien changer
-
-${isDoublePage ? `
-📖 NOTE : Le texte peut contenir "--- PAGE SUIVANTE ---" qui sépare deux pages.
-Tu peux retirer ce marqueur et créer une transition naturelle entre les pages.
-` : ''}
+5. **IMPORTANT - Préserver tout le contenu :**
+   - Si tu vois "--- PAGE SUIVANTE ---", c'est qu'il y a DEUX pages de texte
+   - Tu dois conserver TOUT le texte des DEUX pages
+   - Retire juste le marqueur "--- PAGE SUIVANTE ---" et continue le texte naturellement
 
 📝 FORMAT DE SORTIE :
 Retourne un texte fluide, structuré en paragraphes clairs, sans artefacts, prêt à être lu à voix haute.
+IMPORTANT : Conserve TOUT le contenu, ne supprime que les artefacts évidents.
 Retourne UNIQUEMENT ce texte, sans commentaire.`;
 
     const completion = await groq.chat.completions.create({
@@ -80,34 +76,32 @@ Retourne UNIQUEMENT ce texte, sans commentaire.`;
         },
         {
           role: 'user',
-          content: `Nettoie ce texte OCR :\n\n${text}`
+          content: `Nettoie ce texte OCR (il contient potentiellement 2 pages) :\n\n${text}`
         }
       ],
       model: 'llama-3.3-70b-versatile',
-      temperature: 0.15,
+      temperature: 0.1, // Plus conservateur
       max_tokens: 4000
     });
 
     let cleanedText = completion.choices[0]?.message?.content?.trim() || text;
     
-    // Post-traitement supplémentaire pour garantir la propreté
+    // Post-traitement MINIMALISTE pour ne pas perdre de contenu
     cleanedText = cleanedText
       // Supprimer le marqueur de page s'il reste
       .replace(/---\s*PAGE\s*SUIVANTE\s*---/gi, '\n\n')
-      // Normaliser les espaces (max 1 espace)
+      // Normaliser espaces multiples en un seul
       .replace(/[ \t]+/g, ' ')
-      // Normaliser les sauts de ligne (max 2 pour séparer paragraphes)
-      .replace(/\n{3,}/g, '\n\n')
-      // Supprimer espaces en début/fin de chaque ligne
-      .split('\n')
-      .map((line: string) => line.trim())
-      .filter((line: string) => line.length > 0) // Supprimer lignes vides
-      .join('\n\n') // Recréer avec double saut entre paragraphes
+      // Normaliser plus de 3 sauts de ligne en 2
+      .replace(/\n{4,}/g, '\n\n')
+      // Supprimer espaces en fin de ligne
+      .replace(/[ \t]+$/gm, '')
       .trim();
     
     console.log('✨ Texte nettoyé (longueur):', cleanedText.length);
     console.log('📊 Différence:', cleanedText.length - text.length, 'caractères');
-    console.log('📄 Aperçu:', cleanedText.substring(0, 150) + '...');
+    console.log('📄 Premier paragraphe:', cleanedText.substring(0, 150) + '...');
+    console.log('📄 Dernier paragraphe:', '...' + cleanedText.substring(cleanedText.length - 150));
 
     return json({ 
       cleanedText,
