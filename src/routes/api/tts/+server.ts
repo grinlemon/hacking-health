@@ -15,6 +15,7 @@ export const POST: RequestHandler = async ({ request }) => {
     }
     
     const apiKey = env.ELEVENLABS_API_KEY;
+    const voiceId = env.VOICE_ID || '3KUqqj6ZlrH5jkEAwiMb';
     console.log('Clé API:', apiKey ? 'PRESENT ✓' : 'MISSING ✗');
     
     if (!apiKey) {
@@ -22,8 +23,7 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ message: 'Clé API manquante' }, { status: 500 });
     }
     
-    const VOICE_ID = 'pNInz6obpgDQGcFmaJgB';
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`;
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
     
     console.log('Appel ElevenLabs...');
     
