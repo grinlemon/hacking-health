@@ -177,6 +177,7 @@
   </div>
 
   <div class="camera-container">
+    <!-- svelte-ignore a11y-media-has-caption -->
     <video 
       bind:this={video} 
       autoplay 
