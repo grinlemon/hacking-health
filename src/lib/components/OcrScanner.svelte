@@ -11,6 +11,7 @@
   let stream = $state<MediaStream | null>(null);
   let capturedImage = $state<string | null>(null);
   let extractedText = $state('');
+  let rawOcrText = $state(''); // NOUVEAU : Texte brut avant nettoyage
   let statusMessage = $state('Prêt à scanner une page');
   let statusType = $state<'info' | 'success' | 'error' | 'warning'>('info');
   
@@ -24,6 +25,7 @@
   let isPlaying = $state(false);
   let audioUrl = $state<string | null>(null);
   let textLength = $state(0);
+  let showComparison = $state(true); // NOUVEAU : Afficher la comparaison
 
   function updateStatus(message: string, type: typeof statusType = 'info'): void {
     statusMessage = message;
@@ -89,22 +91,47 @@
 
     try {
       isProcessing = true;
-      updateStatus('🔍 Analyse OCR en cours...', 'info');
+      updateStatus('🔍 Découpage de l\'image...', 'info');
 
-      const result = await Tesseract.recognize(
-        capturedImage,
+      // Diviser l'image en deux pages
+      const [leftPageImg, rightPageImg] = await splitImageInTwo(capturedImage);
+
+      // OCR sur la page gauche
+      updateStatus('📖 Analyse page gauche...', 'info');
+      const leftResult = await Tesseract.recognize(
+        leftPageImg,
         'fra+eng',
         {
           logger: (m: any) => {
             if (m.status === 'recognizing text') {
-              const progress = Math.round(m.progress * 100);
-              updateStatus(`📖 Analyse: ${progress}%`, 'info');
+              const progress = Math.round(m.progress * 50); // 0-50%
+              updateStatus(`📖 Page gauche: ${progress}%`, 'info');
             }
           }
         }
       );
 
-      const rawText = result.data.text.trim();
+      // OCR sur la page droite
+      updateStatus('📖 Analyse page droite...', 'info');
+      const rightResult = await Tesseract.recognize(
+        rightPageImg,
+        'fra+eng',
+        {
+          logger: (m: any) => {
+            if (m.status === 'recognizing text') {
+              const progress = Math.round(m.progress * 50) + 50; // 50-100%
+              updateStatus(`📖 Page droite: ${progress}%`, 'info');
+            }
+          }
+        }
+      );
+
+      const leftText = leftResult.data.text.trim();
+      const rightText = rightResult.data.text.trim();
+      
+      // Combiner : page gauche + séparateur + page droite
+      const rawText = leftText + '\n\n--- PAGE SUIVANTE ---\n\n' + rightText;
+      rawOcrText = rawText;
       
       if (!rawText || rawText.length < 10) {
         updateStatus('⚠️ Peu de texte détecté - Réessayez', 'warning');
@@ -114,33 +141,72 @@
       }
 
       // Nettoyer le texte avec Groq
-      updateStatus('🤖 Nettoyage du texte avec IA...', 'info');
+      updateStatus('🤖 Nettoyage du texte...', 'info');
       
       const cleanResponse = await fetch('/api/clean-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: rawText })
+        body: JSON.stringify({ 
+          text: rawText,
+          isDoublePage: true
+        })
       });
 
       if (cleanResponse.ok) {
         const { cleanedText } = await cleanResponse.json();
         extractedText = cleanedText;
-        console.log('Texte nettoyé:', cleanedText.substring(0, 100));
+        console.log('📄 Texte brut:', rawText.substring(0, 200));
+        console.log('✨ Texte nettoyé:', cleanedText.substring(0, 200));
       } else {
-        // Si l'API échoue, utiliser le texte brut
         extractedText = rawText;
         console.warn('Nettoyage échoué, utilisation du texte brut');
       }
 
       textLength = extractedText.length;
       showPlayBtn = true;
-      updateStatus(`✅ ${textLength} caractères - Texte nettoyé`, 'success');
+      updateStatus(`✅ ${textLength} caractères - 2 pages analysées`, 'success');
       isProcessing = false;
       
     } catch (err) {
       updateStatus('Erreur OCR: ' + (err as Error).message, 'error');
       isProcessing = false;
     }
+  }
+
+  // Fonction pour diviser l'image en deux pages
+  function splitImageInTwo(imageDataUrl: string): Promise<[string, string]> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      
+      img.onload = () => {
+        const tempCanvas = document.createElement('canvas');
+        const ctx = tempCanvas.getContext('2d');
+        
+        if (!ctx) {
+          reject(new Error('Canvas context error'));
+          return;
+        }
+        
+        const halfWidth = Math.floor(img.width / 2);
+        
+        // Page GAUCHE
+        tempCanvas.width = halfWidth;
+        tempCanvas.height = img.height;
+        ctx.drawImage(img, 0, 0, halfWidth, img.height, 0, 0, halfWidth, img.height);
+        const leftPage = tempCanvas.toDataURL('image/jpeg', 0.95);
+        
+        // Page DROITE
+        ctx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+        ctx.drawImage(img, halfWidth, 0, halfWidth, img.height, 0, 0, halfWidth, img.height);
+        const rightPage = tempCanvas.toDataURL('image/jpeg', 0.95);
+        
+        console.log('✂️ Image divisée : gauche + droite');
+        resolve([leftPage, rightPage]);
+      };
+      
+      img.onerror = () => reject(new Error('Image load error'));
+      img.src = imageDataUrl;
+    });
   }
 
   async function generateAndPlayAudio(): Promise<void> {
@@ -262,7 +328,8 @@
       <video bind:this={video} autoplay playsinline></video>
       <div class="guide-overlay">
         <div class="frame"></div>
-        <p>Positionnez la page</p>
+        <div class="center-line"></div>
+        <p>Centrez la reliure du livre sur la ligne</p>
       </div>
     {:else if capturedImage}
       <img src={capturedImage} alt="Page capturée" class="preview" />
@@ -320,13 +387,47 @@
   </div>
 
   {#if extractedText}
-    <div class="text-box">
-      <div class="text-header">
-        <h3>📄 Texte extrait</h3>
-        <span class="badge">{textLength} caractères</span>
-      </div>
-      <p class="text-content">{extractedText}</p>
+    <div class="comparison-toggle">
+      <button 
+        class="btn-toggle" 
+        onclick={() => showComparison = !showComparison}
+      >
+        {showComparison ? '👁️ Masquer la comparaison' : '👁️ Voir la comparaison'}
+      </button>
     </div>
+
+    {#if showComparison && rawOcrText}
+      <div class="comparison-container">
+        <div class="text-box comparison-box">
+          <div class="text-header">
+            <h3>📄 Texte brut OCR</h3>
+            <span class="badge badge-warning">{rawOcrText.length} caractères</span>
+          </div>
+          <p class="text-content">{rawOcrText}</p>
+        </div>
+
+        <div class="comparison-arrow">
+          <span>↓</span>
+          <span>🤖 IA</span>
+        </div>
+
+        <div class="text-box comparison-box">
+          <div class="text-header">
+            <h3>✨ Texte nettoyé & réorganisé</h3>
+            <span class="badge">{textLength} caractères</span>
+          </div>
+          <p class="text-content">{extractedText}</p>
+        </div>
+      </div>
+    {:else}
+      <div class="text-box">
+        <div class="text-header">
+          <h3>✨ Texte nettoyé par IA</h3>
+          <span class="badge">{textLength} caractères</span>
+        </div>
+        <p class="text-content">{extractedText}</p>
+      </div>
+    {/if}
   {/if}
 
   <audio 
@@ -400,6 +501,40 @@
     border-radius: 20px;
     margin-top: 20px;
     font-weight: 600;
+    font-size: 14px;
+  }
+
+  .center-line {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: white;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.8),
+                0 0 16px rgba(255, 255, 255, 0.4);
+    transform: translateX(-50%);
+    z-index: 10;
+  }
+
+  .center-line::before,
+  .center-line::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    width: 40px;
+    height: 2px;
+    background: white;
+    transform: translateX(-50%);
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+  }
+
+  .center-line::before {
+    top: 20%;
+  }
+
+  .center-line::after {
+    bottom: 20%;
   }
 
   .placeholder {
@@ -554,5 +689,52 @@
     color: #374151;
     white-space: pre-wrap;
     margin: 0;
+  }
+
+  .comparison-toggle {
+    margin-bottom: 16px;
+    text-align: center;
+  }
+
+  .btn-toggle {
+    padding: 10px 20px;
+    background: #6B7280;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.3s;
+  }
+
+  .btn-toggle:hover {
+    background: #4B5563;
+    transform: translateY(-1px);
+  }
+
+  .comparison-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .comparison-box {
+    margin-top: 0;
+  }
+
+  .comparison-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 24px;
+    color: #6B7280;
+    font-weight: 600;
+    padding: 8px 0;
+  }
+
+  .badge-warning {
+    background: #F59E0B;
   }
 </style>
