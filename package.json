@@ -25,6 +25,7 @@
 	},
 	"dependencies": {
 		"elevenlabs": "^1.59.0",
+		"groq-sdk": "^0.33.0",
 		"tesseract.js": "^6.0.1"
 	}
 }

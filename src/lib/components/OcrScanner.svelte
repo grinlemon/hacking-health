@@ -31,57 +31,34 @@
   }
 
   async function startCamera(): Promise<void> {
-  try {
-    console.log('1. Demande caméra...');
-    updateStatus('Démarrage de la caméra...', 'info');
-    
-    const mediaStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'environment',
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      }
-    });
+    try {
+      updateStatus('Démarrage de la caméra...', 'info');
+      
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        }
+      });
 
-    console.log('2. Stream reçu:', mediaStream);
-    stream = mediaStream;
-    
-    // Afficher d'abord la vidéo
-    showVideo = true;
-    showCaptureBtn = true;
-    
-    // Attendre que le DOM soit mis à jour
-    await new Promise(resolve => setTimeout(resolve, 300));
-    
-    console.log('3. Video element après délai:', video);
-    
-    if (video) {
-      video.srcObject = mediaStream;
-      console.log('4. srcObject assigné');
+      stream = mediaStream;
       
-      // Attendre que la vidéo soit prête
-      video.onloadedmetadata = () => {
-        console.log('5. Metadata chargée');
-        video?.play().catch(err => console.error('Play error:', err));
-      };
-    } else {
-      console.error('Video element toujours undefined!');
+      // Attendre un tick pour que video soit bindé
+      await new Promise(resolve => setTimeout(resolve, 100));
       
-      // Plan B : Chercher l'élément video manuellement
-      const videoEl = document.querySelector('video');
-      console.log('Video trouvée dans le DOM:', videoEl);
-      if (videoEl) {
-        videoEl.srcObject = mediaStream;
-        await videoEl.play();
+      if (video) {
+        video.srcObject = mediaStream;
       }
+      
+      showVideo = true;
+      showCaptureBtn = true;
+      
+      updateStatus('📸 Positionnez la page et capturez', 'success');
+    } catch (err) {
+      updateStatus('Erreur caméra: ' + (err as Error).message, 'error');
     }
-    
-    updateStatus('📸 Positionnez la page et capturez', 'success');
-  } catch (err) {
-    console.error('Erreur complète:', err);
-    updateStatus('Erreur caméra: ' + (err as Error).message, 'error');
   }
-}
 
   function captureImage(): void {
     if (!canvas || !video) return;
@@ -89,14 +66,12 @@
     const context = canvas.getContext('2d');
     if (!context) return;
 
-    // Capturer l'image
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     capturedImage = canvas.toDataURL('image/jpeg', 0.95);
     
-    // Arrêter la caméra
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       stream = null;
@@ -129,17 +104,37 @@
         }
       );
 
-      extractedText = result.data.text.trim();
-      textLength = extractedText.length;
+      const rawText = result.data.text.trim();
       
-      if (extractedText && extractedText.length > 10) {
-        showPlayBtn = true;
-        updateStatus(`✅ ${textLength} caractères détectés`, 'success');
-      } else {
+      if (!rawText || rawText.length < 10) {
         updateStatus('⚠️ Peu de texte détecté - Réessayez', 'warning');
         showPlayBtn = true;
+        isProcessing = false;
+        return;
       }
 
+      // Nettoyer le texte avec Groq
+      updateStatus('🤖 Nettoyage du texte avec IA...', 'info');
+      
+      const cleanResponse = await fetch('/api/clean-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: rawText })
+      });
+
+      if (cleanResponse.ok) {
+        const { cleanedText } = await cleanResponse.json();
+        extractedText = cleanedText;
+        console.log('Texte nettoyé:', cleanedText.substring(0, 100));
+      } else {
+        // Si l'API échoue, utiliser le texte brut
+        extractedText = rawText;
+        console.warn('Nettoyage échoué, utilisation du texte brut');
+      }
+
+      textLength = extractedText.length;
+      showPlayBtn = true;
+      updateStatus(`✅ ${textLength} caractères - Texte nettoyé`, 'success');
       isProcessing = false;
       
     } catch (err) {
@@ -231,7 +226,7 @@
     updateStatus('✅ Lecture terminée', 'success');
   }
 
-  // Cleanup au démontage
+  // Cleanup avec $effect - syntaxe Svelte 5
   $effect(() => {
     return () => {
       if (browser && stream) {
@@ -254,7 +249,7 @@
 
   <div class="camera-container">
     {#if showVideo}
-      <!-- svelte-ignore a11y-media-has-caption -->
+      <!-- svelte-ignore a11y_missing_attribute -->
       <video bind:this={video} autoplay playsinline></video>
       <div class="guide-overlay">
         <div class="frame"></div>
@@ -273,13 +268,13 @@
 
   <div class="controls">
     {#if !showVideo && !capturedImage}
-      <button class="btn btn-primary" on:click={startCamera}>
+      <button class="btn btn-primary" onclick={startCamera}>
         📷 Démarrer
       </button>
     {/if}
     
     {#if showCaptureBtn}
-      <button class="btn btn-capture" on:click={captureImage}>
+      <button class="btn btn-capture" onclick={captureImage}>
         📸 Capturer
       </button>
     {/if}
@@ -287,7 +282,7 @@
     {#if showProcessBtn}
       <button 
         class="btn btn-primary" 
-        on:click={processOCR}
+        onclick={processOCR}
         disabled={isProcessing}
       >
         {isProcessing ? '⏳ Analyse...' : '🔍 Extraire le texte'}
@@ -296,20 +291,20 @@
 
     {#if showPlayBtn}
       {#if audioUrl}
-        <button class="btn btn-play" on:click={togglePlayPause}>
+        <button class="btn btn-play" onclick={togglePlayPause}>
           {isPlaying ? '⏸️ Pause' : '▶️ Lire'}
         </button>
       {:else}
         <button 
           class="btn btn-play" 
-          on:click={generateAndPlayAudio}
+          onclick={generateAndPlayAudio}
           disabled={isGenerating}
         >
           {isGenerating ? '⏳ Génération...' : '🎤 Générer l\'audio'}
         </button>
       {/if}
 
-      <button class="btn btn-secondary" on:click={resetCapture}>
+      <button class="btn btn-secondary" onclick={resetCapture}>
         🔄 Recommencer
       </button>
     {/if}
@@ -327,7 +322,7 @@
 
   <audio 
     bind:this={audioElement}
-    on:ended={handleAudioEnd}
+    onended={handleAudioEnd}
     class="hidden"
   ></audio>
 </div>
