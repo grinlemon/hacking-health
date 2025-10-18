@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { ELEVENLABS_API_KEY } from '$env/static/private';
+import { env } from '$env/dynamic/private';
 
 export const POST: RequestHandler = async ({ request }) => {
   console.log('========== API TTS CALLED ==========');
@@ -8,19 +8,21 @@ export const POST: RequestHandler = async ({ request }) => {
   try {
     const body = await request.json();
     const { text } = body;
-    console.log('Texte:', text?.substring(0, 50));
+    console.log('Texte reçu:', text?.substring(0, 50));
     
     if (!text) {
       return json({ message: 'Pas de texte' }, { status: 400 });
     }
     
-    console.log('Clé API:', ELEVENLABS_API_KEY ? 'PRESENT ✓' : 'MISSING ✗');
+    const apiKey = env.ELEVENLABS_API_KEY;
+    console.log('Clé API:', apiKey ? 'PRESENT ✓' : 'MISSING ✗');
     
-    if (!ELEVENLABS_API_KEY) {
+    if (!apiKey) {
+      console.error('ELEVENLABS_API_KEY manquante dans les variables d\'environnement');
       return json({ message: 'Clé API manquante' }, { status: 500 });
     }
     
-    const VOICE_ID = 'imRmmzTqlLHt9Do1HufF';
+    const VOICE_ID = 'pNInz6obpgDQGcFmaJgB';
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`;
     
     console.log('Appel ElevenLabs...');
@@ -30,7 +32,7 @@ export const POST: RequestHandler = async ({ request }) => {
       headers: {
         'Accept': 'audio/mpeg',
         'Content-Type': 'application/json',
-        'xi-api-key': ELEVENLABS_API_KEY
+        'xi-api-key': apiKey
       },
       body: JSON.stringify({
         text: text,
@@ -42,12 +44,14 @@ export const POST: RequestHandler = async ({ request }) => {
       })
     });
 
-    console.log('Status:', response.status);
+    console.log('Status ElevenLabs:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.log('Erreur:', errorText);
-      return json({ message: errorText }, { status: response.status });
+      console.error('Erreur ElevenLabs:', errorText);
+      return json({ 
+        message: 'Erreur ElevenLabs: ' + errorText 
+      }, { status: response.status });
     }
 
     const audioBuffer = await response.arrayBuffer();
@@ -55,12 +59,14 @@ export const POST: RequestHandler = async ({ request }) => {
 
     return new Response(audioBuffer, {
       headers: {
-        'Content-Type': 'audio/mpeg'
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': audioBuffer.byteLength.toString()
       }
     });
 
   } catch (err) {
-    console.error('ERREUR:', err);
+    console.error('========== ERREUR ==========');
+    console.error(err);
     return json({ 
       message: (err instanceof Error ? err.message : String(err)) 
     }, { status: 500 });
