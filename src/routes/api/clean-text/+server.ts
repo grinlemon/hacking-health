@@ -31,7 +31,7 @@ export const POST: RequestHandler = async ({ request }) => {
 - Ajouter du contenu qui n'existe pas dans le texte original
 - Supprimer des paragraphes entiers
 - Résumer ou raccourcir le texte
-- Paraphraser ou reformuler (sauf si nécessaire pour corriger une erreur OCR)
+- Paraphraser ou reformuler (sauf si nécessaire pour corriger une erreur d'OCR)
 
 ✅ TU DOIS :
 
