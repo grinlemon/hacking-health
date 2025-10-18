@@ -29,12 +29,12 @@ export const POST: RequestHandler = async ({ request }) => {
 
 ⚠️ RÈGLES STRICTES - NE JAMAIS :
 - Ajouter du texte qui n'existe pas
-- Supprimer du contenu existant
 - Paraphraser ou reformuler
 - Résumer ou raccourcir
 - Ajouter des explications
 
 ✅ CORRECTIONS AUTORISÉES UNIQUEMENT :
+0. Il faut absolument que le texte de sortie soit fluide et lisible.
 1. Erreurs de caractères évidents : l→I, O→0, rn→m, vv→w, |→l
 2. Lettres isolées sans sens : "h h" → supprimer, "l l" → supprimer, "aa bb" → supprimer
 3. Ponctuation manquante évidente : "mot.Mot" → "mot. Mot"
@@ -56,8 +56,6 @@ Indices de détection :
 - Paragraphes qui ne se suivent pas logiquement
 - Marges/espacements inhabituels au centre
 ` : ''}
-
-IMPORTANT : Si tu n'es PAS SÛR d'une correction → NE FAIS RIEN, garde le texte original.
 
 Format de sortie : Retourne UNIQUEMENT le texte corrigé, sans commentaire, sans ajout.`;
 
