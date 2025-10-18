@@ -226,7 +226,16 @@
     updateStatus('✅ Lecture terminée', 'success');
   }
 
-  // Cleanup avec $effect - syntaxe Svelte 5
+  // Effect pour assigner le stream à la vidéo quand elle devient disponible
+  $effect(() => {
+    if (video && stream && showVideo) {
+      console.log('Effect: Assigning stream to video');
+      video.srcObject = stream;
+      video.play().catch(err => console.error('Play error:', err));
+    }
+  });
+
+  // Cleanup au démontage
   $effect(() => {
     return () => {
       if (browser && stream) {
