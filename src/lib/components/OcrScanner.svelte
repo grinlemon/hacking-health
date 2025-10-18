@@ -1,9 +1,8 @@
 <script lang="ts">
   import { browser } from '$app/environment';
-  import Tesseract from 'tesseract.js';
 
   // Version de l'application
-  const APP_VERSION = 'v0.0.13';
+  const APP_VERSION = 'v0.0.14';
 
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
@@ -54,7 +53,7 @@
     progressPercent = 0;
 
     try {
-      // 1. CAPTURER
+      // 1. CAPTURER L'IMAGE
       const context = canvas.getContext('2d');
       if (!context) return;
 
@@ -63,6 +62,7 @@
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       
       const capturedImage = canvas.toDataURL('image/jpeg', 0.95);
+      debugLeftImage = capturedImage; // Pour le debug
       
       // Arrêter la caméra
       if (stream) {
@@ -70,66 +70,31 @@
         stream = null;
       }
 
-      progressPercent = 10;
-
-      // 2. DIVISER L'IMAGE
-      statusMessage = 'Découpage des pages...';
-      const [leftPageImg, rightPageImg] = await splitImageInTwo(capturedImage);
-      debugLeftImage = leftPageImg;
-      debugRightImage = rightPageImg;
-      progressPercent = 15;
-
-      // 3. PRÉTRAITER LES IMAGES
-      statusMessage = 'Amélioration de la qualité...';
-      const processedLeft = await preprocessImage(leftPageImg);
-      const processedRight = await preprocessImage(rightPageImg);
       progressPercent = 20;
 
-      // 4. OCR PAGE GAUCHE
-      statusMessage = 'Lecture page gauche...';
-      const leftResult = await Tesseract.recognize(processedLeft, 'fra+eng', {
-        logger: (m: any) => {
-          if (m.status === 'recognizing text') {
-            progressPercent = 20 + Math.round(m.progress * 30);
-          }
-        }
-      });
-      const leftText = leftResult.data.text.trim();
-      console.log('📄 PAGE GAUCHE (longueur):', leftText.length);
-      console.log('📄 PAGE GAUCHE (début):', leftText.substring(0, 150));
-
-      // 5. OCR PAGE DROITE
-      statusMessage = 'Lecture page droite...';
-      const rightResult = await Tesseract.recognize(processedRight, 'fra+eng', {
-        logger: (m: any) => {
-          if (m.status === 'recognizing text') {
-            progressPercent = 50 + Math.round(m.progress * 30);
-          }
-        }
-      });
-      const rightText = rightResult.data.text.trim();
-      console.log('📄 PAGE DROITE (longueur):', rightText.length);
-      console.log('📄 PAGE DROITE (début):', rightText.substring(0, 150));
-
-      const rawText = leftText + '\n\n=== SÉPARATION PAGE GAUCHE/DROITE ===\n\n' + rightText;
-      rawOcrText = rawText;
-      console.log('📦 TEXTE COMBINÉ (longueur totale):', rawText.length);
-      progressPercent = 75;
-
-      // 6. NETTOYER AVEC GROQ
-      statusMessage = 'Nettoyage du texte...';
-      const cleanResponse = await fetch('/api/clean-text', {
+      // 2. EXTRAIRE LE TEXTE AVEC LLAMA VISION
+      statusMessage = '🤖 Llama Vision analyse l\'image...';
+      
+      const visionResponse = await fetch('/api/vision-extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: rawText, isDoublePage: true })
+        body: JSON.stringify({ 
+          image: capturedImage
+        })
       });
 
-      if (cleanResponse.ok) {
-        const { cleanedText } = await cleanResponse.json();
-        extractedText = cleanedText;
-      } else {
-        extractedText = rawText;
+      progressPercent = 60;
+
+      if (!visionResponse.ok) {
+        throw new Error('Erreur lors de l\'extraction du texte');
       }
+
+      const { extractedText: visionText } = await visionResponse.json();
+      extractedText = visionText;
+      rawOcrText = visionText;
+      
+      console.log('� TEXTE EXTRAIT (longueur):', visionText.length);
+      console.log('📄 TEXTE EXTRAIT (début):', visionText.substring(0, 200));
 
       progressPercent = 100;
       statusMessage = 'Texte extrait - Cliquez pour lire';
@@ -143,7 +108,7 @@
     }
   }
 
-  // Générer et lire l'audio
+  // Générer et lire l'audio avec ElevenLabs
   async function playAudio(): Promise<void> {
     if (!extractedText) return;
 
@@ -157,16 +122,16 @@
 
       // Générer l'audio si pas déjà fait
       if (!audioUrl) {
-        statusMessage = 'Génération audio...';
+        statusMessage = '🎙️ ElevenLabs génère l\'audio...';
         
-        const response = await fetch('/api/tts', {
+        const response = await fetch('/api/elevenlabs-tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: extractedText })
         });
 
         if (!response.ok) {
-          throw new Error('Erreur génération audio');
+          throw new Error('Erreur génération audio ElevenLabs');
         }
 
         const blob = await response.blob();
@@ -178,7 +143,7 @@
         audioElement.src = audioUrl;
         await audioElement.play();
         appState = 'playing';
-        statusMessage = 'Lecture en cours';
+        statusMessage = '🔊 Lecture en cours';
       }
 
     } catch (err) {
@@ -438,21 +403,17 @@
         </div>
       </div>
 
-      {#if showDebug && debugLeftImage && debugRightImage}
+      {#if showDebug && debugLeftImage}
         <div class="debug-section">
-          <h3>🔍 Images découpées :</h3>
+          <h3>🔍 Image capturée :</h3>
           <div class="debug-images">
             <div class="debug-image-container">
-              <p><strong>Page GAUCHE</strong></p>
-              <img src={debugLeftImage} alt="Page gauche" />
-            </div>
-            <div class="debug-image-container">
-              <p><strong>Page DROITE</strong></p>
-              <img src={debugRightImage} alt="Page droite" />
+              <p><strong>Image complète</strong></p>
+              <img src={debugLeftImage} alt="Image capturée" />
             </div>
           </div>
           <div class="debug-text">
-            <p><strong>Texte brut OCR :</strong></p>
+            <p><strong>Texte extrait par Llama Vision :</strong></p>
             <pre>{rawOcrText}</pre>
           </div>
         </div>
