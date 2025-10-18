@@ -1,38 +1,41 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
+  import { browser } from '$app/environment';
   import Tesseract from 'tesseract.js';
-  import type { OcrState, StatusType } from '$lib/types';
 
   let video: HTMLVideoElement;
   let canvas: HTMLCanvasElement;
-  let preview: HTMLImageElement;
+  let audioElement: HTMLAudioElement;
 
-  let state: OcrState = {
-    stream: null,
-    capturedImage: null,
-    extractedText: '',
-    statusMessage: 'Prêt à scanner un document',
-    statusType: 'info',
-    showVideo: false,
-    showPreview: false,
-    showCaptureBtn: false,
-    showProcessBtn: false,
-    showSpeakBtn: false,
-    showLoader: false,
-    showResult: false,
-    processBtnDisabled: false
-  };
+  // État de l'application
+  let stream: MediaStream | null = null;
+  let capturedImage: string | null = null;
+  let extractedText: string = '';
+  let statusMessage: string = 'Prêt à scanner une page';
+  let statusType: 'info' | 'success' | 'error' | 'warning' = 'info';
+  
+  // États UI
+  let showVideo: boolean = false;
+  let showCaptureBtn: boolean = false;
+  let showProcessBtn: boolean = false;
+  let showPlayBtn: boolean = false;
+  let isProcessing: boolean = false;
+  let isGenerating: boolean = false;
+  let isPlaying: boolean = false;
+  let audioUrl: string | null = null;
 
-  function updateStatus(message: string, type: StatusType = 'info'): void {
-    state.statusMessage = message;
-    state.statusType = type;
+  let textLength: number = 0;
+
+  function updateStatus(message: string, type: typeof statusType = 'info'): void {
+    statusMessage = message;
+    statusType = type;
   }
 
   async function startCamera(): Promise<void> {
     try {
       updateStatus('Démarrage de la caméra...', 'info');
       
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'environment',
           width: { ideal: 1920 },
@@ -40,16 +43,13 @@
         }
       });
 
-      state.stream = mediaStream;
-      video.srcObject = mediaStream;
-      state.showVideo = true;
-      state.showPreview = false;
-      state.showCaptureBtn = true;
+      video.srcObject = stream;
+      showVideo = true;
+      showCaptureBtn = true;
       
-      updateStatus('Caméra active - Positionnez le document', 'success');
+      updateStatus('📸 Positionnez la page et capturez', 'success');
     } catch (err) {
-      const error = err as Error;
-      updateStatus('Erreur d\'accès à la caméra: ' + error.message, 'error');
+      updateStatus('Erreur caméra: ' + (err as Error).message, 'error');
     }
   }
 
@@ -57,229 +57,350 @@
     const context = canvas.getContext('2d');
     if (!context) return;
 
+    // Capturer l'image
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     
-    state.capturedImage = canvas.toDataURL('image/jpeg', 0.95);
+    capturedImage = canvas.toDataURL('image/jpeg', 0.95);
     
-    preview.src = state.capturedImage;
-    state.showPreview = true;
-    state.showVideo = false;
-    
-    if (state.stream) {
-      state.stream.getTracks().forEach((track) => track.stop());
-      state.stream = null;
+    // Arrêter la caméra
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
     }
     
-    state.showCaptureBtn = false;
-    state.showProcessBtn = true;
+    showVideo = false;
+    showCaptureBtn = false;
+    showProcessBtn = true;
     
-    updateStatus('Image capturée - Prêt pour l\'analyse', 'success');
+    updateStatus('✅ Image capturée', 'success');
   }
 
   async function processOCR(): Promise<void> {
-    if (!state.capturedImage) return;
+    if (!capturedImage) return;
 
     try {
-      updateStatus('Analyse OCR en cours...', 'info');
-      state.showLoader = true;
-      state.processBtnDisabled = true;
-      state.showResult = false;
+      isProcessing = true;
+      updateStatus('🔍 Analyse OCR en cours...', 'info');
 
       const result = await Tesseract.recognize(
-        state.capturedImage,
+        capturedImage,
         'fra+eng',
         {
           logger: (m: Tesseract.LoggerMessage) => {
             if (m.status === 'recognizing text') {
-              updateStatus(`OCR en cours: ${Math.round(m.progress * 100)}%`, 'info');
+              const progress = Math.round(m.progress * 100);
+              updateStatus(`📖 Analyse: ${progress}%`, 'info');
             }
           }
         }
       );
 
-      state.extractedText = result.data.text.trim();
+      extractedText = result.data.text.trim();
+      textLength = extractedText.length;
       
-      if (state.extractedText) {
-        state.showResult = true;
-        state.showSpeakBtn = true;
-        updateStatus('Texte extrait avec succès!', 'success');
+      if (extractedText && extractedText.length > 10) {
+        showPlayBtn = true;
+        updateStatus(`✅ ${textLength} caractères détectés`, 'success');
       } else {
-        updateStatus('Aucun texte détecté dans l\'image', 'error');
+        updateStatus('⚠️ Peu de texte détecté - Réessayez', 'warning');
+        showPlayBtn = true; // Permettre quand même de tester
       }
 
-      state.showLoader = false;
-      state.processBtnDisabled = false;
+      isProcessing = false;
       
     } catch (err) {
-      const error = err as Error;
-      updateStatus('Erreur lors de l\'OCR: ' + error.message, 'error');
-      state.showLoader = false;
-      state.processBtnDisabled = false;
+      updateStatus('Erreur OCR: ' + (err as Error).message, 'error');
+      isProcessing = false;
     }
   }
 
-  function speakText(): void {
-    if (!state.extractedText) {
-      updateStatus('Aucun texte à lire', 'error');
-      return;
+  async function generateAndPlayAudio(): Promise<void> {
+    if (!extractedText) return;
+
+    try {
+      isGenerating = true;
+      updateStatus('🎤 Génération audio...', 'info');
+
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: extractedText })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Erreur ${response.status}: ${errorText}`);
+      }
+
+      const blob = await response.blob();
+      
+      // Nettoyer l'ancien URL
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+      
+      audioUrl = URL.createObjectURL(blob);
+
+      if (audioElement) {
+        audioElement.src = audioUrl;
+        await audioElement.play();
+        isPlaying = true;
+        updateStatus('🔊 Lecture en cours...', 'info');
+      }
+
+      isGenerating = false;
+      
+    } catch (err) {
+      updateStatus('Erreur TTS: ' + (err as Error).message, 'error');
+      isGenerating = false;
+      console.error('Erreur complète:', err);
     }
+  }
 
-    if (!('speechSynthesis' in window)) {
-      updateStatus('Synthèse vocale non supportée', 'error');
-      return;
-    }
+  function togglePlayPause(): void {
+    if (!audioElement || !audioUrl) return;
 
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(state.extractedText);
-    utterance.lang = 'fr-FR';
-    utterance.rate = 0.9;
-    utterance.pitch = 1;
-    utterance.volume = 1;
-
-    utterance.onstart = () => {
-      updateStatus('Lecture en cours...', 'info');
-    };
-
-    utterance.onend = () => {
-      updateStatus('Lecture terminée', 'success');
-    };
-
-    utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
-      updateStatus('Erreur de synthèse vocale: ' + event.error, 'error');
-    };
-
-    if (window.speechSynthesis.speaking) {
-      window.speechSynthesis.cancel();
-      updateStatus('Lecture arrêtée', 'info');
+    if (isPlaying) {
+      audioElement.pause();
+      isPlaying = false;
+      updateStatus('⏸️ Pause', 'info');
     } else {
-      window.speechSynthesis.speak(utterance);
+      audioElement.play();
+      isPlaying = true;
+      updateStatus('🔊 Lecture...', 'info');
     }
+  }
+
+  function resetCapture(): void {
+    capturedImage = null;
+    extractedText = '';
+    showProcessBtn = false;
+    showPlayBtn = false;
+    textLength = 0;
+    
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
+    
+    isPlaying = false;
+    
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.src = '';
+    }
+    
+    updateStatus('Prêt pour une nouvelle capture', 'info');
+  }
+
+  function handleAudioEnd(): void {
+    isPlaying = false;
+    updateStatus('✅ Lecture terminée', 'success');
   }
 
   onDestroy(() => {
-    if (state.stream) {
-      state.stream.getTracks().forEach((track) => track.stop());
+    if (browser && stream) {
+      stream.getTracks().forEach((track) => track.stop());
     }
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
     }
   });
 </script>
 
 <div class="container">
-  <h1>📸 OCR Scanner PWA</h1>
+  <h1>📖 Lecteur de Page</h1>
+  <p class="subtitle">Scanner • OCR • Audio</p>
   
-  <div class="status status-{state.statusType}">
-    {state.statusMessage}
+  <div class="status status-{statusType}">
+    {statusMessage}
   </div>
 
   <div class="camera-container">
-    <!-- svelte-ignore a11y-media-has-caption -->
-    <video 
-      bind:this={video} 
-      autoplay 
-      playsinline 
-      class:hidden={!state.showVideo}
-    ></video>
+    {#if showVideo}
+      <!-- svelte-ignore a11y-media-has-caption -->
+      <video bind:this={video} autoplay playsinline></video>
+      <div class="guide-overlay">
+        <div class="frame"></div>
+        <p>Positionnez la page</p>
+      </div>
+    {:else if capturedImage}
+      <img src={capturedImage} alt="Page capturée" class="preview" />
+    {:else}
+      <div class="placeholder">
+        <div class="icon">📄</div>
+        <p>Prêt à scanner</p>
+      </div>
+    {/if}
     <canvas bind:this={canvas} class="hidden"></canvas>
-    <img 
-      bind:this={preview} 
-      class="image-preview" 
-      class:hidden={!state.showPreview} 
-      alt="Preview" 
-    />
   </div>
 
-  {#if !state.showVideo && !state.showPreview}
-    <button class="btn btn-primary" on:click={startCamera}>
-      📷 Démarrer la caméra
-    </button>
-  {/if}
-  
-  {#if state.showCaptureBtn}
-    <button class="btn btn-success" on:click={captureImage}>
-      📸 Capturer l'image
-    </button>
-  {/if}
+  <div class="controls">
+    {#if !showVideo && !capturedImage}
+      <button class="btn btn-primary" on:click={startCamera}>
+        📷 Démarrer
+      </button>
+    {/if}
+    
+    {#if showCaptureBtn}
+      <button class="btn btn-capture" on:click={captureImage}>
+        📸 Capturer
+      </button>
+    {/if}
 
-  {#if state.showProcessBtn}
-    <button 
-      class="btn btn-primary" 
-      on:click={processOCR} 
-      disabled={state.processBtnDisabled}
-    >
-      🔍 Analyser avec OCR
-    </button>
-  {/if}
+    {#if showProcessBtn}
+      <button 
+        class="btn btn-primary" 
+        on:click={processOCR}
+        disabled={isProcessing}
+      >
+        {isProcessing ? '⏳ Analyse...' : '🔍 Extraire le texte'}
+      </button>
+    {/if}
 
-  {#if state.showSpeakBtn}
-    <button class="btn btn-primary" on:click={speakText}>
-      🔊 Lire le texte
-    </button>
-  {/if}
+    {#if showPlayBtn}
+      {#if audioUrl}
+        <button class="btn btn-play" on:click={togglePlayPause}>
+          {isPlaying ? '⏸️ Pause' : '▶️ Lire'}
+        </button>
+      {:else}
+        <button 
+          class="btn btn-play" 
+          on:click={generateAndPlayAudio}
+          disabled={isGenerating}
+        >
+          {isGenerating ? '⏳ Génération...' : '🎤 Générer l\'audio'}
+        </button>
+      {/if}
 
-  {#if state.showLoader}
-    <div class="loader"></div>
-  {/if}
+      <button class="btn btn-secondary" on:click={resetCapture}>
+        🔄 Recommencer
+      </button>
+    {/if}
+  </div>
 
-  {#if state.showResult}
-    <div class="result">
-      <h3>📄 Texte extrait :</h3>
-      <p>{state.extractedText}</p>
+  {#if extractedText}
+    <div class="text-box">
+      <div class="text-header">
+        <h3>📄 Texte extrait</h3>
+        <span class="badge">{textLength} caractères</span>
+      </div>
+      <p class="text-content">{extractedText}</p>
     </div>
   {/if}
+
+  <audio 
+    bind:this={audioElement}
+    on:ended={handleAudioEnd}
+    class="hidden"
+  ></audio>
 </div>
 
 <style>
   .container {
-    max-width: 600px;
-    margin: 0 auto;
-    padding: 20px;
+    max-width: 800px;
+    margin: 20px auto;
+    padding: 24px;
     background: white;
     border-radius: 20px;
-    margin-top: 20px;
     box-shadow: 0 20px 60px rgba(0,0,0,0.3);
   }
 
   h1 {
     color: #4F46E5;
     text-align: center;
-    margin-bottom: 30px;
-    font-size: 28px;
+    margin-bottom: 8px;
+    font-size: 32px;
+  }
+
+  .subtitle {
+    text-align: center;
+    color: #6B7280;
+    margin-bottom: 24px;
+    font-size: 16px;
   }
 
   .camera-container {
     position: relative;
     width: 100%;
     margin-bottom: 20px;
-  }
-
-  video, .image-preview {
-    width: 100%;
-    border-radius: 10px;
+    border-radius: 12px;
+    overflow: hidden;
     background: #000;
+    min-height: 400px;
   }
 
-  canvas {
-    display: none;
+  video, .preview {
+    width: 100%;
+    display: block;
+    border-radius: 12px;
+  }
+
+  .guide-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .frame {
+    border: 3px dashed rgba(255, 255, 255, 0.8);
+    width: 80%;
+    height: 70%;
+    border-radius: 8px;
+  }
+
+  .guide-overlay p {
+    color: white;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 10px 20px;
+    border-radius: 20px;
+    margin-top: 20px;
+    font-weight: 600;
+  }
+
+  .placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 400px;
+    background: linear-gradient(135deg, #667eea20 0%, #764ba220 100%);
+  }
+
+  .placeholder .icon {
+    font-size: 80px;
+    margin-bottom: 20px;
+  }
+
+  .placeholder p {
+    color: #6B7280;
+    font-size: 18px;
   }
 
   .hidden {
     display: none;
   }
 
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
   .btn {
     width: 100%;
-    padding: 15px;
+    padding: 16px;
     border: none;
-    border-radius: 10px;
+    border-radius: 12px;
     font-size: 16px;
     font-weight: 600;
     cursor: pointer;
-    margin-bottom: 10px;
     transition: all 0.3s;
   }
 
@@ -293,13 +414,35 @@
     transform: translateY(-2px);
   }
 
-  .btn-success {
+  .btn-capture {
     background: #10B981;
+    color: white;
+    font-size: 18px;
+    padding: 20px;
+  }
+
+  .btn-capture:hover {
+    background: #059669;
+    transform: scale(1.02);
+  }
+
+  .btn-play {
+    background: #F59E0B;
+    color: white;
+    font-size: 18px;
+  }
+
+  .btn-play:hover:not(:disabled) {
+    background: #D97706;
+  }
+
+  .btn-secondary {
+    background: #6B7280;
     color: white;
   }
 
-  .btn-success:hover {
-    background: #059669;
+  .btn-secondary:hover {
+    background: #4B5563;
   }
 
   .btn:disabled {
@@ -308,10 +451,12 @@
   }
 
   .status {
-    padding: 15px;
-    border-radius: 10px;
+    padding: 16px;
+    border-radius: 12px;
     margin-bottom: 20px;
-    font-size: 14px;
+    font-size: 15px;
+    font-weight: 500;
+    text-align: center;
   }
 
   .status-info {
@@ -329,38 +474,47 @@
     color: #991B1B;
   }
 
-  .result {
+  .status-warning {
+    background: #FEF3C7;
+    color: #92400E;
+  }
+
+  .text-box {
     margin-top: 20px;
     padding: 20px;
     background: #F9FAFB;
-    border-radius: 10px;
+    border-radius: 12px;
+    border: 2px solid #E5E7EB;
     max-height: 300px;
     overflow-y: auto;
   }
 
-  .result h3 {
-    color: #4F46E5;
-    margin-bottom: 10px;
+  .text-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
   }
 
-  .result p {
-    line-height: 1.6;
+  .text-header h3 {
+    color: #4F46E5;
+    font-size: 18px;
+    margin: 0;
+  }
+
+  .badge {
+    background: #4F46E5;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .text-content {
+    line-height: 1.8;
     color: #374151;
     white-space: pre-wrap;
-  }
-
-  .loader {
-    border: 4px solid #f3f3f3;
-    border-top: 4px solid #4F46E5;
-    border-radius: 50%;
-    width: 40px;
-    height: 40px;
-    animation: spin 1s linear infinite;
-    margin: 20px auto;
-  }
-
-  @keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    margin: 0;
   }
 </style>
