@@ -7,35 +7,22 @@
   let canvas = $state<HTMLCanvasElement>();
   let audioElement = $state<HTMLAudioElement>();
 
-  // État de l'application
+  // État simplifié
   let stream = $state<MediaStream | null>(null);
-  let capturedImage = $state<string | null>(null);
   let extractedText = $state('');
-  let rawOcrText = $state(''); // NOUVEAU : Texte brut avant nettoyage
-  let statusMessage = $state('Prêt à scanner une page');
-  let statusType = $state<'info' | 'success' | 'error' | 'warning'>('info');
+  let rawOcrText = $state('');
+  let statusMessage = $state('');
+  let progressPercent = $state(0);
   
-  // États UI
-  let showVideo = $state(false);
-  let showCaptureBtn = $state(false);
-  let showProcessBtn = $state(false);
-  let showPlayBtn = $state(false);
-  let isProcessing = $state(false);
-  let isGenerating = $state(false);
-  let isPlaying = $state(false);
+  // États du workflow
+  type AppState = 'camera' | 'processing' | 'ready' | 'playing' | 'paused';
+  let appState = $state<AppState>('camera');
+  
   let audioUrl = $state<string | null>(null);
-  let textLength = $state(0);
-  let showComparison = $state(true); // NOUVEAU : Afficher la comparaison
 
-  function updateStatus(message: string, type: typeof statusType = 'info'): void {
-    statusMessage = message;
-    statusType = type;
-  }
-
-  async function startCamera(): Promise<void> {
+  // Démarrer la caméra automatiquement
+  async function initCamera(): Promise<void> {
     try {
-      updateStatus('Démarrage de la caméra...', 'info');
-      
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: 'environment',
@@ -45,135 +32,178 @@
       });
 
       stream = mediaStream;
-      
-      // Attendre un tick pour que video soit bindé
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      if (video) {
-        video.srcObject = mediaStream;
-      }
-      
-      showVideo = true;
-      showCaptureBtn = true;
-      
-      updateStatus('📸 Positionnez la page et capturez', 'success');
+      appState = 'camera';
     } catch (err) {
-      updateStatus('Erreur caméra: ' + (err as Error).message, 'error');
+      console.error('Erreur caméra:', err);
+      statusMessage = 'Erreur caméra: ' + (err as Error).message;
     }
   }
 
-  function captureImage(): void {
+  // Capturer et tout traiter
+  async function startProcessing(): Promise<void> {
     if (!canvas || !video) return;
     
-    const context = canvas.getContext('2d');
-    if (!context) return;
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
-    capturedImage = canvas.toDataURL('image/jpeg', 0.95);
-    
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      stream = null;
-    }
-    
-    showVideo = false;
-    showCaptureBtn = false;
-    showProcessBtn = true;
-    
-    updateStatus('✅ Image capturée', 'success');
-  }
-
-  async function processOCR(): Promise<void> {
-    if (!capturedImage) return;
+    appState = 'processing';
+    statusMessage = 'Capture en cours...';
+    progressPercent = 0;
 
     try {
-      isProcessing = true;
-      updateStatus('🔍 Découpage de l\'image...', 'info');
+      // 1. CAPTURER
+      const context = canvas.getContext('2d');
+      if (!context) return;
 
-      // Diviser l'image en deux pages
-      const [leftPageImg, rightPageImg] = await splitImageInTwo(capturedImage);
-
-      // OCR sur la page gauche
-      updateStatus('📖 Analyse page gauche...', 'info');
-      const leftResult = await Tesseract.recognize(
-        leftPageImg,
-        'fra+eng',
-        {
-          logger: (m: any) => {
-            if (m.status === 'recognizing text') {
-              const progress = Math.round(m.progress * 50); // 0-50%
-              updateStatus(`📖 Page gauche: ${progress}%`, 'info');
-            }
-          }
-        }
-      );
-
-      // OCR sur la page droite
-      updateStatus('📖 Analyse page droite...', 'info');
-      const rightResult = await Tesseract.recognize(
-        rightPageImg,
-        'fra+eng',
-        {
-          logger: (m: any) => {
-            if (m.status === 'recognizing text') {
-              const progress = Math.round(m.progress * 50) + 50; // 50-100%
-              updateStatus(`📖 Page droite: ${progress}%`, 'info');
-            }
-          }
-        }
-      );
-
-      const leftText = leftResult.data.text.trim();
-      const rightText = rightResult.data.text.trim();
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
       
-      // Combiner : page gauche + séparateur + page droite
-      const rawText = leftText + '\n\n--- PAGE SUIVANTE ---\n\n' + rightText;
-      rawOcrText = rawText;
+      const capturedImage = canvas.toDataURL('image/jpeg', 0.95);
       
-      if (!rawText || rawText.length < 10) {
-        updateStatus('⚠️ Peu de texte détecté - Réessayez', 'warning');
-        showPlayBtn = true;
-        isProcessing = false;
-        return;
+      // Arrêter la caméra
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = null;
       }
 
-      // Nettoyer le texte avec Groq
-      updateStatus('🤖 Nettoyage du texte...', 'info');
-      
+      progressPercent = 10;
+
+      // 2. DIVISER L'IMAGE
+      statusMessage = 'Découpage des pages...';
+      const [leftPageImg, rightPageImg] = await splitImageInTwo(capturedImage);
+      progressPercent = 15;
+
+      // 3. OCR PAGE GAUCHE
+      statusMessage = 'Lecture page gauche...';
+      const leftResult = await Tesseract.recognize(leftPageImg, 'fra+eng', {
+        logger: (m: any) => {
+          if (m.status === 'recognizing text') {
+            progressPercent = 15 + Math.round(m.progress * 30);
+          }
+        }
+      });
+      const leftText = leftResult.data.text.trim();
+
+      // 4. OCR PAGE DROITE
+      statusMessage = 'Lecture page droite...';
+      const rightResult = await Tesseract.recognize(rightPageImg, 'fra+eng', {
+        logger: (m: any) => {
+          if (m.status === 'recognizing text') {
+            progressPercent = 45 + Math.round(m.progress * 30);
+          }
+        }
+      });
+      const rightText = rightResult.data.text.trim();
+
+      const rawText = leftText + '\n\n--- PAGE SUIVANTE ---\n\n' + rightText;
+      rawOcrText = rawText;
+      progressPercent = 75;
+
+      // 5. NETTOYER AVEC GROQ
+      statusMessage = 'Nettoyage du texte...';
       const cleanResponse = await fetch('/api/clean-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          text: rawText,
-          isDoublePage: true
-        })
+        body: JSON.stringify({ text: rawText, isDoublePage: true })
       });
 
       if (cleanResponse.ok) {
         const { cleanedText } = await cleanResponse.json();
         extractedText = cleanedText;
-        console.log('📄 Texte brut:', rawText.substring(0, 200));
-        console.log('✨ Texte nettoyé:', cleanedText.substring(0, 200));
       } else {
         extractedText = rawText;
-        console.warn('Nettoyage échoué, utilisation du texte brut');
       }
 
-      textLength = extractedText.length;
-      showPlayBtn = true;
-      updateStatus(`✅ ${textLength} caractères - 2 pages analysées`, 'success');
-      isProcessing = false;
-      
+      progressPercent = 100;
+      statusMessage = 'Prêt à lire';
+      appState = 'ready';
+
     } catch (err) {
-      updateStatus('Erreur OCR: ' + (err as Error).message, 'error');
-      isProcessing = false;
+      console.error('Erreur:', err);
+      statusMessage = 'Erreur: ' + (err as Error).message;
+      appState = 'camera';
+      await initCamera();
     }
   }
 
-  // Fonction pour diviser l'image en deux pages
+  // Générer et lire l'audio
+  async function playAudio(): Promise<void> {
+    if (!extractedText) return;
+
+    try {
+      if (appState === 'paused' && audioElement) {
+        // Reprendre la lecture
+        await audioElement.play();
+        appState = 'playing';
+        return;
+      }
+
+      // Générer l'audio si pas déjà fait
+      if (!audioUrl) {
+        statusMessage = 'Génération audio...';
+        
+        const response = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: extractedText })
+        });
+
+        if (!response.ok) {
+          throw new Error('Erreur génération audio');
+        }
+
+        const blob = await response.blob();
+        audioUrl = URL.createObjectURL(blob);
+      }
+
+      // Lire
+      if (audioElement && audioUrl) {
+        audioElement.src = audioUrl;
+        await audioElement.play();
+        appState = 'playing';
+        statusMessage = 'Lecture en cours';
+      }
+
+    } catch (err) {
+      console.error('Erreur audio:', err);
+      statusMessage = 'Erreur: ' + (err as Error).message;
+    }
+  }
+
+  // Pause
+  function pauseAudio(): void {
+    if (audioElement) {
+      audioElement.pause();
+      appState = 'paused';
+      statusMessage = 'En pause';
+    }
+  }
+
+  // Recommencer
+  function restart(): void {
+    extractedText = '';
+    rawOcrText = '';
+    statusMessage = '';
+    progressPercent = 0;
+    
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl = null;
+    }
+    
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.src = '';
+    }
+    
+    initCamera();
+  }
+
+  // Fin de lecture
+  function handleAudioEnd(): void {
+    appState = 'ready';
+    statusMessage = 'Lecture terminée';
+  }
+
+  // Diviser l'image
   function splitImageInTwo(imageDataUrl: string): Promise<[string, string]> {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -183,125 +213,38 @@
         const ctx = tempCanvas.getContext('2d');
         
         if (!ctx) {
-          reject(new Error('Canvas context error'));
+          reject(new Error('Canvas error'));
           return;
         }
         
         const halfWidth = Math.floor(img.width / 2);
         
-        // Page GAUCHE
         tempCanvas.width = halfWidth;
         tempCanvas.height = img.height;
         ctx.drawImage(img, 0, 0, halfWidth, img.height, 0, 0, halfWidth, img.height);
         const leftPage = tempCanvas.toDataURL('image/jpeg', 0.95);
         
-        // Page DROITE
         ctx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
         ctx.drawImage(img, halfWidth, 0, halfWidth, img.height, 0, 0, halfWidth, img.height);
         const rightPage = tempCanvas.toDataURL('image/jpeg', 0.95);
         
-        console.log('✂️ Image divisée : gauche + droite');
         resolve([leftPage, rightPage]);
       };
       
-      img.onerror = () => reject(new Error('Image load error'));
+      img.onerror = () => reject(new Error('Image error'));
       img.src = imageDataUrl;
     });
   }
 
-  async function generateAndPlayAudio(): Promise<void> {
-    if (!extractedText) return;
-
-    try {
-      isGenerating = true;
-      updateStatus('🎤 Génération audio...', 'info');
-
-      const response = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: extractedText })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Erreur ${response.status}: ${errorText}`);
-      }
-
-      const blob = await response.blob();
-      
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
-      
-      audioUrl = URL.createObjectURL(blob);
-
-      if (audioElement) {
-        audioElement.src = audioUrl;
-        await audioElement.play();
-        isPlaying = true;
-        updateStatus('🔊 Lecture en cours...', 'info');
-      }
-
-      isGenerating = false;
-      
-    } catch (err) {
-      updateStatus('Erreur TTS: ' + (err as Error).message, 'error');
-      isGenerating = false;
-      console.error('Erreur complète:', err);
-    }
-  }
-
-  function togglePlayPause(): void {
-    if (!audioElement || !audioUrl) return;
-
-    if (isPlaying) {
-      audioElement.pause();
-      isPlaying = false;
-      updateStatus('⏸️ Pause', 'info');
-    } else {
-      audioElement.play();
-      isPlaying = true;
-      updateStatus('🔊 Lecture...', 'info');
-    }
-  }
-
-  function resetCapture(): void {
-    capturedImage = null;
-    extractedText = '';
-    showProcessBtn = false;
-    showPlayBtn = false;
-    textLength = 0;
-    
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-      audioUrl = null;
-    }
-    
-    isPlaying = false;
-    
-    if (audioElement) {
-      audioElement.pause();
-      audioElement.src = '';
-    }
-    
-    updateStatus('Prêt pour une nouvelle capture', 'info');
-  }
-
-  function handleAudioEnd(): void {
-    isPlaying = false;
-    updateStatus('✅ Lecture terminée', 'success');
-  }
-
-  // Effect pour assigner le stream à la vidéo quand elle devient disponible
+  // Effect pour la caméra
   $effect(() => {
-    if (video && stream && showVideo) {
-      console.log('Effect: Assigning stream to video');
+    if (video && stream && appState === 'camera') {
       video.srcObject = stream;
       video.play().catch(err => console.error('Play error:', err));
     }
   });
 
-  // Cleanup au démontage
+  // Cleanup
   $effect(() => {
     return () => {
       if (browser && stream) {
@@ -312,122 +255,70 @@
       }
     };
   });
+
+  // Démarrer la caméra au chargement
+  if (browser) {
+    initCamera();
+  }
 </script>
 
-<div class="container">
-  <h1>📖 Lecteur de Page</h1>
-  <p class="subtitle">Scanner • OCR • Audio</p>
-  
-  <div class="status status-{statusType}">
-    {statusMessage}
-  </div>
-
-  <div class="camera-container">
-    {#if showVideo}
+<div class="app">
+  <!-- Caméra plein écran -->
+  {#if appState === 'camera'}
+    <div class="camera-fullscreen">
       <!-- svelte-ignore a11y_missing_attribute -->
       <video bind:this={video} autoplay playsinline></video>
-      <div class="guide-overlay">
-        <div class="frame"></div>
-        <div class="center-line"></div>
-        <p>Centrez la reliure du livre sur la ligne</p>
-      </div>
-    {:else if capturedImage}
-      <img src={capturedImage} alt="Page capturée" class="preview" />
-    {:else}
-      <div class="placeholder">
-        <div class="icon">📄</div>
-        <p>Prêt à scanner</p>
-      </div>
-    {/if}
-    <canvas bind:this={canvas} class="hidden"></canvas>
-  </div>
-
-  <div class="controls">
-    {#if !showVideo && !capturedImage}
-      <button class="btn btn-primary" onclick={startCamera}>
-        📷 Démarrer
-      </button>
-    {/if}
-    
-    {#if showCaptureBtn}
-      <button class="btn btn-capture" onclick={captureImage}>
-        📸 Capturer
-      </button>
-    {/if}
-
-    {#if showProcessBtn}
-      <button 
-        class="btn btn-primary" 
-        onclick={processOCR}
-        disabled={isProcessing}
-      >
-        {isProcessing ? '⏳ Analyse...' : '🔍 Extraire le texte'}
-      </button>
-    {/if}
-
-    {#if showPlayBtn}
-      {#if audioUrl}
-        <button class="btn btn-play" onclick={togglePlayPause}>
-          {isPlaying ? '⏸️ Pause' : '▶️ Lire'}
-        </button>
-      {:else}
-        <button 
-          class="btn btn-play" 
-          onclick={generateAndPlayAudio}
-          disabled={isGenerating}
-        >
-          {isGenerating ? '⏳ Génération...' : '🎤 Générer l\'audio'}
-        </button>
-      {/if}
-
-      <button class="btn btn-secondary" onclick={resetCapture}>
-        🔄 Recommencer
-      </button>
-    {/if}
-  </div>
-
-  {#if extractedText}
-    <div class="comparison-toggle">
-      <button 
-        class="btn-toggle" 
-        onclick={() => showComparison = !showComparison}
-      >
-        {showComparison ? '👁️ Masquer la comparaison' : '👁️ Voir la comparaison'}
+      <div class="center-line"></div>
+      <canvas bind:this={canvas} class="hidden"></canvas>
+      
+      <button class="action-btn" onclick={startProcessing}>
+        📸 Commencer
       </button>
     </div>
+  {/if}
 
-    {#if showComparison && rawOcrText}
-      <div class="comparison-container">
-        <div class="text-box comparison-box">
-          <div class="text-header">
-            <h3>📄 Texte brut OCR</h3>
-            <span class="badge badge-warning">{rawOcrText.length} caractères</span>
-          </div>
-          <p class="text-content">{rawOcrText}</p>
-        </div>
-
-        <div class="comparison-arrow">
-          <span>↓</span>
-          <span>🤖 IA</span>
-        </div>
-
-        <div class="text-box comparison-box">
-          <div class="text-header">
-            <h3>✨ Texte nettoyé & réorganisé</h3>
-            <span class="badge">{textLength} caractères</span>
-          </div>
-          <p class="text-content">{extractedText}</p>
-        </div>
+  <!-- Processing -->
+  {#if appState === 'processing'}
+    <div class="processing-screen">
+      <div class="loader"></div>
+      <h2>{statusMessage}</h2>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: {progressPercent}%"></div>
       </div>
-    {:else}
-      <div class="text-box">
-        <div class="text-header">
-          <h3>✨ Texte nettoyé par IA</h3>
-          <span class="badge">{textLength} caractères</span>
-        </div>
-        <p class="text-content">{extractedText}</p>
+      <p class="progress-text">{progressPercent}%</p>
+    </div>
+  {/if}
+
+  <!-- Texte + Lecture -->
+  {#if appState === 'ready' || appState === 'playing' || appState === 'paused'}
+    <div class="result-screen">
+      <div class="header">
+        <h1>📖 Texte extrait</h1>
+        <button class="btn-small" onclick={restart}>🔄 Recommencer</button>
       </div>
-    {/if}
+
+      <div class="text-display">
+        <p>{extractedText}</p>
+      </div>
+
+      {#if statusMessage}
+        <p class="status-small">{statusMessage}</p>
+      {/if}
+
+      {#if appState === 'ready'}
+        <button class="action-btn" onclick={playAudio}>
+          ▶️ Lire
+        </button>
+      {:else if appState === 'playing'}
+        <button class="action-btn playing" onclick={pauseAudio}>
+          ⏸️ Pause
+        </button>
+      {:else if appState === 'paused'}
+        <button class="action-btn" onclick={playAudio}>
+          ▶️ Reprendre
+        </button>
+      {/if}
+    </div>
   {/if}
 
   <audio 
@@ -438,70 +329,29 @@
 </div>
 
 <style>
-  .container {
-    max-width: 800px;
-    margin: 20px auto;
-    padding: 24px;
-    background: white;
-    border-radius: 20px;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  .app {
+    position: fixed;
+    inset: 0;
+    background: #000;
   }
 
-  h1 {
-    color: #4F46E5;
-    text-align: center;
-    margin-bottom: 8px;
-    font-size: 32px;
-  }
-
-  .subtitle {
-    text-align: center;
-    color: #6B7280;
-    margin-bottom: 24px;
-    font-size: 16px;
-  }
-
-  .camera-container {
+  .camera-fullscreen {
     position: relative;
     width: 100%;
-    margin-bottom: 20px;
-    border-radius: 12px;
-    overflow: hidden;
-    background: #000;
-    min-height: 400px;
-  }
-
-  video, .preview {
-    width: 100%;
-    display: block;
-    border-radius: 12px;
-  }
-
-  .guide-overlay {
-    position: absolute;
-    inset: 0;
+    height: 100%;
     display: flex;
-    flex-direction: column;
-    align-items: center;
+    align-items: flex-end;
     justify-content: center;
-    pointer-events: none;
+    padding-bottom: 40px;
   }
 
-  .frame {
-    border: 3px dashed rgba(255, 255, 255, 0.8);
-    width: 80%;
-    height: 70%;
-    border-radius: 8px;
-  }
-
-  .guide-overlay p {
-    color: white;
-    background: rgba(0, 0, 0, 0.7);
-    padding: 10px 20px;
-    border-radius: 20px;
-    margin-top: 20px;
-    font-weight: 600;
-    font-size: 14px;
+  video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
 
   .center-line {
@@ -537,204 +387,162 @@
     bottom: 20%;
   }
 
-  .placeholder {
+  .action-btn {
+    position: relative;
+    z-index: 20;
+    padding: 20px 60px;
+    font-size: 24px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 50px;
+    cursor: pointer;
+    box-shadow: 0 10px 40px rgba(102, 126, 234, 0.4);
+    transition: all 0.3s;
+  }
+
+  .action-btn:hover {
+    transform: translateY(-3px) scale(1.05);
+    box-shadow: 0 15px 50px rgba(102, 126, 234, 0.6);
+  }
+
+  .action-btn:active {
+    transform: translateY(-1px) scale(1.02);
+  }
+
+  .action-btn.playing {
+    background: linear-gradient(135deg, #F59E0B 0%, #EF4444 100%);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 10px 40px rgba(245, 158, 11, 0.4); }
+    50% { box-shadow: 0 15px 50px rgba(245, 158, 11, 0.8); }
+  }
+
+  .processing-screen {
+    width: 100%;
+    height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-height: 400px;
-    background: linear-gradient(135deg, #667eea20 0%, #764ba220 100%);
+    padding: 40px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
   }
 
-  .placeholder .icon {
-    font-size: 80px;
-    margin-bottom: 20px;
+  .loader {
+    width: 80px;
+    height: 80px;
+    border: 8px solid rgba(255, 255, 255, 0.2);
+    border-top: 8px solid white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 30px;
   }
 
-  .placeholder p {
-    color: #6B7280;
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .processing-screen h2 {
+    font-size: 24px;
+    margin-bottom: 30px;
+    text-align: center;
+  }
+
+  .progress-bar {
+    width: 100%;
+    max-width: 400px;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: white;
+    transition: width 0.3s;
+    border-radius: 10px;
+  }
+
+  .progress-text {
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .result-screen {
+    width: 100%;
+    height: 100%;
+    background: white;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+  }
+
+  .header h1 {
+    font-size: 24px;
+    margin: 0;
+  }
+
+  .btn-small {
+    padding: 10px 20px;
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    border: 2px solid white;
+    border-radius: 20px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+  }
+
+  .btn-small:hover {
+    background: white;
+    color: #667eea;
+  }
+
+  .text-display {
+    flex: 1;
+    overflow-y: auto;
+    padding: 30px;
+    background: #F9FAFB;
+  }
+
+  .text-display p {
+    line-height: 1.8;
     font-size: 18px;
+    color: #374151;
+    white-space: pre-wrap;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  .status-small {
+    text-align: center;
+    padding: 10px;
+    color: #6B7280;
+    font-size: 14px;
+  }
+
+  .result-screen .action-btn {
+    margin: 20px auto 40px;
   }
 
   .hidden {
     display: none;
-  }
-
-  .controls {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .btn {
-    width: 100%;
-    padding: 16px;
-    border: none;
-    border-radius: 12px;
-    font-size: 16px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.3s;
-  }
-
-  .btn-primary {
-    background: #4F46E5;
-    color: white;
-  }
-
-  .btn-primary:hover:not(:disabled) {
-    background: #4338CA;
-    transform: translateY(-2px);
-  }
-
-  .btn-capture {
-    background: #10B981;
-    color: white;
-    font-size: 18px;
-    padding: 20px;
-  }
-
-  .btn-capture:hover {
-    background: #059669;
-    transform: scale(1.02);
-  }
-
-  .btn-play {
-    background: #F59E0B;
-    color: white;
-    font-size: 18px;
-  }
-
-  .btn-play:hover:not(:disabled) {
-    background: #D97706;
-  }
-
-  .btn-secondary {
-    background: #6B7280;
-    color: white;
-  }
-
-  .btn-secondary:hover {
-    background: #4B5563;
-  }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .status {
-    padding: 16px;
-    border-radius: 12px;
-    margin-bottom: 20px;
-    font-size: 15px;
-    font-weight: 500;
-    text-align: center;
-  }
-
-  .status-info {
-    background: #DBEAFE;
-    color: #1E40AF;
-  }
-
-  .status-success {
-    background: #D1FAE5;
-    color: #065F46;
-  }
-
-  .status-error {
-    background: #FEE2E2;
-    color: #991B1B;
-  }
-
-  .status-warning {
-    background: #FEF3C7;
-    color: #92400E;
-  }
-
-  .text-box {
-    margin-top: 20px;
-    padding: 20px;
-    background: #F9FAFB;
-    border-radius: 12px;
-    border: 2px solid #E5E7EB;
-    max-height: 300px;
-    overflow-y: auto;
-  }
-
-  .text-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-
-  .text-header h3 {
-    color: #4F46E5;
-    font-size: 18px;
-    margin: 0;
-  }
-
-  .badge {
-    background: #4F46E5;
-    color: white;
-    padding: 4px 12px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .text-content {
-    line-height: 1.8;
-    color: #374151;
-    white-space: pre-wrap;
-    margin: 0;
-  }
-
-  .comparison-toggle {
-    margin-bottom: 16px;
-    text-align: center;
-  }
-
-  .btn-toggle {
-    padding: 10px 20px;
-    background: #6B7280;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 14px;
-    font-weight: 500;
-    transition: all 0.3s;
-  }
-
-  .btn-toggle:hover {
-    background: #4B5563;
-    transform: translateY(-1px);
-  }
-
-  .comparison-container {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .comparison-box {
-    margin-top: 0;
-  }
-
-  .comparison-arrow {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    font-size: 24px;
-    color: #6B7280;
-    font-weight: 600;
-    padding: 8px 0;
-  }
-
-  .badge-warning {
-    background: #F59E0B;
   }
 </style>

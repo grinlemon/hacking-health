@@ -29,33 +29,15 @@ export const POST: RequestHandler = async ({ request }) => {
 
 ⚠️ RÈGLES STRICTES - NE JAMAIS :
 - Ajouter du texte qui n'existe pas
-- Paraphraser ou reformuler
 - Résumer ou raccourcir
 - Ajouter des explications
 
 ✅ CORRECTIONS AUTORISÉES UNIQUEMENT :
-0. Il faut absolument que le texte de sortie soit fluide et lisible.
-1. Erreurs de caractères évidents : l→I, O→0, rn→m, vv→w, |→l
-2. Lettres isolées sans sens : "h h" → supprimer, "l l" → supprimer, "aa bb" → supprimer
-3. Ponctuation manquante évidente : "mot.Mot" → "mot. Mot"
-4. Espaces manquants : "motmot" → "mot mot" (si c'est évident)
-5. Tirets de césure en fin de ligne : "indé-\npendance" → "indépendance"
-
-${isDoublePage ? `
-📖 LIVRE OUVERT (2 PAGES) :
-Analyser la structure du texte :
-- Si tu détectes DEUX colonnes distinctes (page gauche | page droite)
-- IMPORTANT : Lire d'abord TOUTE la page/colonne GAUCHE de haut en bas
-- Puis ajouter un double saut de ligne "\n\n"
-- Puis lire TOUTE la page/colonne DROITE de haut en bas
-- Ne JAMAIS alterner entre les deux pages ligne par ligne
-
-Indices de détection :
-- Numéros de pages différents (ex: "42" à gauche, "43" à droite)
-- Chapitres différents
-- Paragraphes qui ne se suivent pas logiquement
-- Marges/espacements inhabituels au centre
-` : ''}
+1. Corriger les erreurs typographiques (ex: "1" au lieu de "l", "0" au lieu de "O")
+2. Supprime les sauts de ligne inutiles au sein d'un même paragraphe
+3. Supprime les caractères bizarres qui n'ont pas leur place dans un texte
+4. Le texte doit être fluide et lisible, comme dans un livre imprimé
+5. Assure toi que le texte soit cohérent sinon apporte de légères corrections pour que ça ait du sens
 
 Format de sortie : Retourne UNIQUEMENT le texte corrigé, sans commentaire, sans ajout.`;
 
