@@ -2,6 +2,9 @@
   import { browser } from '$app/environment';
   import Tesseract from 'tesseract.js';
 
+  // Version de l'application
+  const APP_VERSION = 'v0.0.13';
+
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
   let canvas = $state<HTMLCanvasElement>();
@@ -388,6 +391,8 @@
       <div class="camera-hint">
         <p class="hint-text">👆 Cliquez n'importe où pour capturer</p>
       </div>
+      
+      <div class="version-corner">{APP_VERSION}</div>
     </div>
   {/if}
 
@@ -407,7 +412,10 @@
   {#if appState === 'ready' || appState === 'playing' || appState === 'paused'}
     <div class="result-screen">
       <div class="header">
-        <h1>📖 Texte extrait</h1>
+        <div class="header-left">
+          <h1>📖 Texte extrait</h1>
+          <span class="version-badge">{APP_VERSION}</span>
+        </div>
         <div class="header-buttons">
           <button 
             class="btn-small" 
@@ -556,6 +564,21 @@
     margin: 0;
   }
 
+  .version-corner {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    z-index: 30;
+    font-size: 12px;
+    font-weight: 600;
+    color: white;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(10px);
+    padding: 6px 14px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
   .processing-screen {
     width: 100%;
     height: 100%;
@@ -629,9 +652,24 @@
     color: white;
   }
 
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+  }
+
   .header h1 {
     font-size: 24px;
     margin: 0;
+  }
+
+  .version-badge {
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.2);
+    padding: 4px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
   }
 
   .header-buttons {
