@@ -1,30 +1,29 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { browser } from '$app/environment';
   import Tesseract from 'tesseract.js';
 
-  let video: HTMLVideoElement;
-  let canvas: HTMLCanvasElement;
-  let audioElement: HTMLAudioElement;
+  // Variables réactives Svelte 5
+  let video = $state<HTMLVideoElement>();
+  let canvas = $state<HTMLCanvasElement>();
+  let audioElement = $state<HTMLAudioElement>();
 
   // État de l'application
-  let stream: MediaStream | null = null;
-  let capturedImage: string | null = null;
-  let extractedText: string = '';
-  let statusMessage: string = 'Prêt à scanner une page';
-  let statusType: 'info' | 'success' | 'error' | 'warning' = 'info';
+  let stream = $state<MediaStream | null>(null);
+  let capturedImage = $state<string | null>(null);
+  let extractedText = $state('');
+  let statusMessage = $state('Prêt à scanner une page');
+  let statusType = $state<'info' | 'success' | 'error' | 'warning'>('info');
   
   // États UI
-  let showVideo: boolean = false;
-  let showCaptureBtn: boolean = false;
-  let showProcessBtn: boolean = false;
-  let showPlayBtn: boolean = false;
-  let isProcessing: boolean = false;
-  let isGenerating: boolean = false;
-  let isPlaying: boolean = false;
-  let audioUrl: string | null = null;
-
-  let textLength: number = 0;
+  let showVideo = $state(false);
+  let showCaptureBtn = $state(false);
+  let showProcessBtn = $state(false);
+  let showPlayBtn = $state(false);
+  let isProcessing = $state(false);
+  let isGenerating = $state(false);
+  let isPlaying = $state(false);
+  let audioUrl = $state<string | null>(null);
+  let textLength = $state(0);
 
   function updateStatus(message: string, type: typeof statusType = 'info'): void {
     statusMessage = message;
@@ -32,28 +31,61 @@
   }
 
   async function startCamera(): Promise<void> {
-    try {
-      updateStatus('Démarrage de la caméra...', 'info');
-      
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
-        }
-      });
+  try {
+    console.log('1. Demande caméra...');
+    updateStatus('Démarrage de la caméra...', 'info');
+    
+    const mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      }
+    });
 
-      video.srcObject = stream;
-      showVideo = true;
-      showCaptureBtn = true;
+    console.log('2. Stream reçu:', mediaStream);
+    stream = mediaStream;
+    
+    // Afficher d'abord la vidéo
+    showVideo = true;
+    showCaptureBtn = true;
+    
+    // Attendre que le DOM soit mis à jour
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    console.log('3. Video element après délai:', video);
+    
+    if (video) {
+      video.srcObject = mediaStream;
+      console.log('4. srcObject assigné');
       
-      updateStatus('📸 Positionnez la page et capturez', 'success');
-    } catch (err) {
-      updateStatus('Erreur caméra: ' + (err as Error).message, 'error');
+      // Attendre que la vidéo soit prête
+      video.onloadedmetadata = () => {
+        console.log('5. Metadata chargée');
+        video?.play().catch(err => console.error('Play error:', err));
+      };
+    } else {
+      console.error('Video element toujours undefined!');
+      
+      // Plan B : Chercher l'élément video manuellement
+      const videoEl = document.querySelector('video');
+      console.log('Video trouvée dans le DOM:', videoEl);
+      if (videoEl) {
+        videoEl.srcObject = mediaStream;
+        await videoEl.play();
+      }
     }
+    
+    updateStatus('📸 Positionnez la page et capturez', 'success');
+  } catch (err) {
+    console.error('Erreur complète:', err);
+    updateStatus('Erreur caméra: ' + (err as Error).message, 'error');
   }
+}
 
   function captureImage(): void {
+    if (!canvas || !video) return;
+    
     const context = canvas.getContext('2d');
     if (!context) return;
 
@@ -88,7 +120,7 @@
         capturedImage,
         'fra+eng',
         {
-          logger: (m: Tesseract.LoggerMessage) => {
+          logger: (m: any) => {
             if (m.status === 'recognizing text') {
               const progress = Math.round(m.progress * 100);
               updateStatus(`📖 Analyse: ${progress}%`, 'info');
@@ -105,7 +137,7 @@
         updateStatus(`✅ ${textLength} caractères détectés`, 'success');
       } else {
         updateStatus('⚠️ Peu de texte détecté - Réessayez', 'warning');
-        showPlayBtn = true; // Permettre quand même de tester
+        showPlayBtn = true;
       }
 
       isProcessing = false;
@@ -136,7 +168,6 @@
 
       const blob = await response.blob();
       
-      // Nettoyer l'ancien URL
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
@@ -200,13 +231,16 @@
     updateStatus('✅ Lecture terminée', 'success');
   }
 
-  onDestroy(() => {
-    if (browser && stream) {
-      stream.getTracks().forEach((track) => track.stop());
-    }
-    if (audioUrl) {
-      URL.revokeObjectURL(audioUrl);
-    }
+  // Cleanup au démontage
+  $effect(() => {
+    return () => {
+      if (browser && stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
   });
 </script>
 
