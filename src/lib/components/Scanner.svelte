@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
 
   // Version de l'application
-  const APP_VERSION = 'v0.0.15';
+  const APP_VERSION = 'v0.0.16';
 
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
