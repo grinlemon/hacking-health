@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
 
   // Version de l'application
-  const APP_VERSION = 'v0.0.16';
+  const APP_VERSION = 'v0.0.17';
 
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
@@ -32,6 +32,7 @@
   let currentChunkIndex = $state(0);
   let isGeneratingAudio = $state(false);
   let audioQueue = $state<string[]>([]);
+  let generatedAudioUrls = $state<string[]>([]); // Stocker tous les URLs générés
   
   // Suivi détaillé pour le debug
   type ChunkStatus = 'waiting' | 'generating' | 'ready' | 'playing' | 'played';
@@ -85,7 +86,7 @@
       progressPercent = 20;
 
       // 2. EXTRAIRE LE TEXTE AVEC LLAMA VISION
-      statusMessage = '🤖 Llama Vision analyse l\'image...';
+      statusMessage = 'Llama Vision analyse l\'image...';
       
       const visionResponse = await fetch('/api/vision-extract', {
         method: 'POST',
@@ -109,8 +110,11 @@
       console.log('📄 TEXTE EXTRAIT (début):', visionText.substring(0, 200));
 
       progressPercent = 100;
-      statusMessage = 'Texte extrait - Cliquez pour lire';
+      statusMessage = 'Texte extrait - Génération audio...';
       appState = 'ready';
+      
+      // Lancer automatiquement la conversion audio
+      await playAudio();
 
     } catch (err) {
       console.error('Erreur:', err);
@@ -122,21 +126,51 @@
 
   // Diviser le texte en chunks pour le streaming
   function splitTextIntoChunks(text: string, chunkSize: number = 500): string[] {
-    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-    const chunks: string[] = [];
-    let currentChunk = '';
-
-    for (const sentence of sentences) {
-      if ((currentChunk + sentence).length > chunkSize && currentChunk.length > 0) {
-        chunks.push(currentChunk.trim());
-        currentChunk = sentence;
-      } else {
-        currentChunk += sentence;
-      }
+    if (!text || text.trim().length === 0) {
+      return [];
     }
 
-    if (currentChunk.trim().length > 0) {
-      chunks.push(currentChunk.trim());
+    const chunks: string[] = [];
+    let currentChunk = '';
+    
+    // Découper par phrases en préservant la ponctuation
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [];
+    
+    // Si aucune phrase n'est détectée, diviser par taille de caractères
+    if (sentences.length === 0) {
+      for (let i = 0; i < text.length; i += chunkSize) {
+        chunks.push(text.substring(i, i + chunkSize).trim());
+      }
+    } else {
+      for (const sentence of sentences) {
+        if ((currentChunk + sentence).length > chunkSize && currentChunk.length > 0) {
+          chunks.push(currentChunk.trim());
+          currentChunk = sentence;
+        } else {
+          currentChunk += sentence;
+        }
+      }
+      
+      // IMPORTANT: Ajouter le dernier chunk s'il reste du texte
+      if (currentChunk.trim().length > 0) {
+        chunks.push(currentChunk.trim());
+      }
+      
+      // Vérifier qu'on a tout le texte
+      const totalCharsInChunks = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const originalTextLength = text.replace(/\s+/g, ' ').trim().length;
+      
+      console.log(`📊 Découpage: ${chunks.length} chunks, ${totalCharsInChunks} caractères sur ${originalTextLength} originaux`);
+      
+      // Si on a perdu du texte, ajouter ce qui manque
+      if (totalCharsInChunks < originalTextLength * 0.95) {
+        console.warn('⚠️ Texte manquant détecté, ajout du reste...');
+        const allChunksText = chunks.join(' ');
+        const missingText = text.substring(allChunksText.length);
+        if (missingText.trim().length > 0) {
+          chunks.push(missingText.trim());
+        }
+      }
     }
 
     // Initialiser les statuts
@@ -147,6 +181,13 @@
 
   // Générer l'audio d'un chunk
   async function generateAudioChunk(text: string, index: number): Promise<string> {
+    // Vérifier si on a déjà généré cet audio
+    if (generatedAudioUrls[index]) {
+      console.log(`♻️ Réutilisation du chunk ${index + 1} (déjà généré)`);
+      chunkStatuses[index] = 'ready';
+      return generatedAudioUrls[index];
+    }
+    
     chunkStatuses[index] = 'generating';
     
     const response = await fetch('/api/elevenlabs-tts', {
@@ -162,7 +203,11 @@
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     
+    // Stocker l'URL généré
+    generatedAudioUrls[index] = url;
     chunkStatuses[index] = 'ready';
+    
+    console.log(`✅ Chunk ${index + 1} généré et sauvegardé`);
     
     return url;
   }
@@ -172,22 +217,36 @@
     if (!audioElement) return;
 
     // Marquer le chunk précédent comme joué
-    if (currentChunkIndex > 0) {
+    if (currentChunkIndex > 0 && currentChunkIndex < chunkStatuses.length) {
       chunkStatuses[currentChunkIndex - 1] = 'played';
     }
 
-    // Si on a des chunks en attente dans la queue
-    if (audioQueue.length > 0) {
-      const nextUrl = audioQueue.shift()!;
-      audioElement.src = nextUrl;
-      await audioElement.play();
-      currentChunkIndex++;
-      
-      chunkStatuses[currentChunkIndex] = 'playing';
-      statusMessage = `🔊 Lecture en cours (${currentChunkIndex}/${audioChunks.length})`;
-    } else if (currentChunkIndex < audioChunks.length && !isGeneratingAudio) {
-      // Sinon, on attend que le prochain chunk soit généré
-      statusMessage = '⏳ Chargement du prochain segment...';
+    // Incrémenter l'index
+    currentChunkIndex++;
+    
+    // Vérifier si on a un chunk suivant
+    if (currentChunkIndex < audioChunks.length) {
+      // Utiliser l'audio déjà généré
+      if (generatedAudioUrls[currentChunkIndex]) {
+        audioElement.src = generatedAudioUrls[currentChunkIndex];
+        await audioElement.play();
+        chunkStatuses[currentChunkIndex] = 'playing';
+        statusMessage = `Lecture en cours (${currentChunkIndex + 1}/${audioChunks.length})`;
+      } else {
+        // Attendre que le chunk soit généré
+        statusMessage = 'Chargement du prochain segment...';
+        
+        // Vérifier périodiquement si l'audio est prêt
+        const checkInterval = setInterval(() => {
+          if (generatedAudioUrls[currentChunkIndex] && audioElement) {
+            clearInterval(checkInterval);
+            audioElement.src = generatedAudioUrls[currentChunkIndex];
+            audioElement.play();
+            chunkStatuses[currentChunkIndex] = 'playing';
+            statusMessage = `Lecture en cours (${currentChunkIndex + 1}/${audioChunks.length})`;
+          }
+        }, 100);
+      }
     }
   }
 
@@ -196,9 +255,14 @@
     isGeneratingAudio = true;
     
     for (let i = 1; i < audioChunks.length; i++) {
+      // Ignorer si déjà généré
+      if (generatedAudioUrls[i]) {
+        console.log(`⏭️ Chunk ${i + 1} déjà généré, passage au suivant`);
+        continue;
+      }
+      
       try {
         const audioUrl = await generateAudioChunk(audioChunks[i], i);
-        audioQueue.push(audioUrl);
         console.log(`✅ Chunk ${i + 1}/${audioChunks.length} généré`);
       } catch (err) {
         console.error(`Erreur chunk ${i}:`, err);
@@ -206,7 +270,7 @@
     }
     
     isGeneratingAudio = false;
-    console.log('✅ Tous les chunks audio générés');
+    console.log('✅ Tous les chunks audio générés et sauvegardés');
   }
 
   // Générer et lire l'audio avec streaming
@@ -223,7 +287,7 @@
 
       // Si c'est une nouvelle lecture
       if (audioChunks.length === 0) {
-        statusMessage = '🎙️ Préparation de l\'audio...';
+        statusMessage = 'Préparation de l\'audio...';
         
         // Diviser le texte en chunks
         audioChunks = splitTextIntoChunks(extractedText, 500);
@@ -238,7 +302,7 @@
           await audioElement.play();
           appState = 'playing';
           chunkStatuses[0] = 'playing';
-          statusMessage = `🔊 Lecture en cours (1/${audioChunks.length})`;
+          statusMessage = `Lecture en cours (1/${audioChunks.length})`;
         }
         
         // Générer les autres chunks en arrière-plan
@@ -246,24 +310,23 @@
           generateAllChunks();
         }
       } else {
-        // Relire depuis le début
+        // Relire depuis le début (réutiliser les audios déjà générés)
+        console.log('🔄 Relecture depuis le début (audio déjà généré)');
         currentChunkIndex = 0;
-        audioQueue = []; // Reset la queue
         
-        // Régénérer tous les chunks
-        audioChunks = splitTextIntoChunks(extractedText, 500);
-        const firstChunkUrl = await generateAudioChunk(audioChunks[0], 0);
+        // Réinitialiser les statuts
+        chunkStatuses = audioChunks.map((_, i) => {
+          if (i === 0) return 'playing';
+          if (generatedAudioUrls[i]) return 'ready';
+          return 'waiting';
+        });
         
-        if (audioElement) {
-          audioElement.src = firstChunkUrl;
+        // Utiliser le premier audio déjà généré
+        if (audioElement && generatedAudioUrls[0]) {
+          audioElement.src = generatedAudioUrls[0];
           await audioElement.play();
           appState = 'playing';
-          chunkStatuses[0] = 'playing';
-          statusMessage = `🔊 Lecture en cours (1/${audioChunks.length})`;
-        }
-        
-        if (audioChunks.length > 1) {
-          generateAllChunks();
+          statusMessage = `Lecture en cours (1/${audioChunks.length})`;
         }
       }
 
@@ -289,13 +352,16 @@
     statusMessage = '';
     progressPercent = 0;
     
-    // Nettoyer les URLs audio
+    // Nettoyer les URLs audio (libérer la mémoire)
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
       audioUrl = null;
     }
     
-    audioQueue.forEach(url => URL.revokeObjectURL(url));
+    generatedAudioUrls.forEach(url => {
+      if (url) URL.revokeObjectURL(url);
+    });
+    generatedAudioUrls = [];
     audioQueue = [];
     audioChunks = [];
     currentChunkIndex = 0;
@@ -323,7 +389,7 @@
     } else {
       // Tous les chunks ont été lus
       appState = 'ready';
-      statusMessage = '✅ Lecture terminée';
+      statusMessage = 'Lecture terminée';
     }
   }
 
@@ -387,7 +453,10 @@
       progressPercent = 0;
       
       // Nettoyer les chunks audio
-      audioQueue.forEach(url => URL.revokeObjectURL(url));
+      generatedAudioUrls.forEach(url => {
+        if (url) URL.revokeObjectURL(url);
+      });
+      generatedAudioUrls = [];
       audioQueue = [];
       audioChunks = [];
       currentChunkIndex = 0;
@@ -396,7 +465,7 @@
       
       // Lancer le countdown de 3 secondes
       countdownSeconds = 3;
-      statusMessage = `📸 Nouvelle capture dans ${countdownSeconds}s...`;
+      statusMessage = `Nouvelle capture dans ${countdownSeconds}s...`;
       
       // Relancer la caméra en arrière-plan
       await initCamera();
@@ -406,7 +475,7 @@
         countdownSeconds--;
         
         if (countdownSeconds > 0) {
-          statusMessage = `📸 Nouvelle capture dans ${countdownSeconds}s...`;
+          statusMessage = `Nouvelle capture dans ${countdownSeconds}s...`;
         } else {
           // Countdown terminé, lancer la capture
           if (countdownInterval) {
@@ -511,7 +580,9 @@
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
-      audioQueue.forEach(url => URL.revokeObjectURL(url));
+      generatedAudioUrls.forEach(url => {
+        if (url) URL.revokeObjectURL(url);
+      });
       if (countdownInterval) {
         clearInterval(countdownInterval);
       }
@@ -539,7 +610,6 @@
     <div class="camera-fullscreen">
       <!-- svelte-ignore a11y_missing_attribute -->
       <video bind:this={video} autoplay playsinline></video>
-      <div class="center-line"></div>
       <canvas bind:this={canvas} class="hidden"></canvas>
       
       {#if countdownSeconds > 0}
@@ -551,7 +621,7 @@
         </div>
       {:else}
         <div class="camera-hint">
-          <p class="hint-text">👆 Cliquez n'importe où pour capturer</p>
+          <p class="hint-text">Cliquez n'importe où pour capturer</p>
         </div>
       {/if}
       
@@ -576,7 +646,7 @@
     <div class="result-screen">
       <div class="header">
         <div class="header-left">
-          <h1>📖 Texte extrait</h1>
+          <h1>Texte extrait</h1>
           <span class="version-badge">{APP_VERSION}</span>
         </div>
         <div class="header-buttons">
@@ -587,7 +657,7 @@
               showDebug = !showDebug; 
             }}
           >
-            {showDebug ? '👁️ Masquer debug' : '🔍 Debug'}
+            {showDebug ? 'Masquer debug' : 'Debug'}
           </button>
           <button 
             class="btn-small" 
@@ -596,14 +666,14 @@
               restart(); 
             }}
           >
-            🔄 Recommencer
+            Recommencer
           </button>
         </div>
       </div>
 
       {#if showDebug && debugLeftImage}
         <div class="debug-section">
-          <h3>🔍 Image capturée :</h3>
+          <h3>Image capturée</h3>
           <div class="debug-images">
             <div class="debug-image-container">
               <p><strong>Image complète</strong></p>
@@ -617,12 +687,12 @@
 
           {#if audioChunks.length > 0}
             <div class="audio-debug-section">
-              <h3>🎵 Streaming Audio - État en temps réel</h3>
+              <h3>Streaming Audio - État en temps réel</h3>
               <div class="audio-stats">
-                <span class="stat-item">📦 Total: {audioChunks.length} segments</span>
-                <span class="stat-item">▶️ En lecture: {currentChunkIndex + 1}</span>
-                <span class="stat-item">✅ Prêts: {chunkStatuses.filter(s => s === 'ready').length}</span>
-                <span class="stat-item">⏳ En attente: {chunkStatuses.filter(s => s === 'waiting').length}</span>
+                <span class="stat-item">Total: {audioChunks.length} segments</span>
+                <span class="stat-item">En lecture: {currentChunkIndex + 1}</span>
+                <span class="stat-item">Prêts: {chunkStatuses.filter(s => s === 'ready').length}</span>
+                <span class="stat-item">En attente: {chunkStatuses.filter(s => s === 'waiting').length}</span>
               </div>
 
               <div class="chunks-list">
@@ -632,20 +702,20 @@
                       <span class="chunk-number">Segment {index + 1}</span>
                       <span class="chunk-status">
                         {#if chunkStatuses[index] === 'waiting'}
-                          ⏳ En attente
+                          En attente
                         {:else if chunkStatuses[index] === 'generating'}
-                          🔄 Génération...
+                          Génération...
                         {:else if chunkStatuses[index] === 'ready'}
-                          ✅ Prêt
+                          Prêt
                         {:else if chunkStatuses[index] === 'playing'}
-                          ▶️ En lecture
+                          En lecture
                         {:else if chunkStatuses[index] === 'played'}
-                          ✓ Écouté
+                          Écouté
                         {/if}
                       </span>
                     </div>
                     <div class="chunk-preview">
-                      {chunk.substring(0, 100)}{chunk.length > 100 ? '...' : ''}
+                      {chunk}
                     </div>
                     <div class="chunk-info">
                       {chunk.length} caractères
@@ -664,15 +734,15 @@
 
       <div class="click-hint">
         {#if appState === 'ready'}
-          <p class="hint-text">👆 Clic gauche : lire l'audio | Clic droit : nouvelle page</p>
-          <p class="audio-warning">⚠️ Audio consomme des tokens • Lecture continue</p>
+          <p class="hint-text">Clic gauche : lire l'audio | Clic droit : nouvelle page</p>
+          <p class="audio-warning">Audio consomme des tokens • Lecture continue</p>
         {:else if appState === 'playing'}
-          <p class="hint-text">👆 Clic gauche : pause | Clic droit : nouvelle page</p>
+          <p class="hint-text">Clic gauche : pause | Clic droit : nouvelle page</p>
           {#if isGeneratingAudio}
-            <p class="audio-info">🔄 Génération des segments suivants...</p>
+            <p class="audio-info">Génération des segments suivants...</p>
           {/if}
         {:else if appState === 'paused'}
-          <p class="hint-text">👆 Clic gauche : reprendre | Clic droit : nouvelle page</p>
+          <p class="hint-text">Clic gauche : reprendre | Clic droit : nouvelle page</p>
         {/if}
       </div>
 
@@ -691,11 +761,11 @@
 
 <style>
   :root {
-    --royal-blue: #1e40af;
-    --royal-blue-dark: #1e3a8a;
-    --royal-blue-light: #3b82f6;
-    --royal-blue-lighter: #60a5fa;
-    --royal-gold: #fbbf24;
+    --primary: #06b6d4;
+    --primary-dark: #0891b2;
+    --primary-light: #22d3ee;
+    --primary-lighter: #67e8f9;
+    --primary-lightest: #a5f3fc;
     --turquoise: #06b6d4;
     --turquoise-dark: #0891b2;
     --turquoise-light: #22d3ee;
@@ -737,49 +807,16 @@
     object-fit: cover;
   }
 
-  .center-line {
-    position: absolute;
-    left: 50%;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: white;
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.8),
-                0 0 16px rgba(255, 255, 255, 0.4);
-    transform: translateX(-50%);
-    z-index: 10;
-  }
-
-  .center-line::before,
-  .center-line::after {
-    content: '';
-    position: absolute;
-    left: 50%;
-    width: 40px;
-    height: 2px;
-    background: white;
-    transform: translateX(-50%);
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
-  }
-
-  .center-line::before {
-    top: 20%;
-  }
-
-  .center-line::after {
-    bottom: 20%;
-  }
-
   .camera-hint {
     position: relative;
     z-index: 20;
     text-align: center;
-    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     backdrop-filter: blur(15px);
     padding: 24px 48px;
     border-radius: 16px;
     border: 2px solid rgba(255, 255, 255, 0.2);
-    box-shadow: 0 8px 32px rgba(30, 64, 175, 0.4);
+    box-shadow: 0 8px 32px rgba(6, 182, 212, 0.4);
   }
 
   .camera-hint .hint-text {
@@ -798,12 +835,12 @@
     font-size: 11px;
     font-weight: 600;
     color: white;
-    background: var(--royal-blue);
+    background: var(--primary);
     backdrop-filter: blur(10px);
     padding: 8px 16px;
     border-radius: 20px;
     border: 2px solid rgba(255, 255, 255, 0.3);
-    box-shadow: 0 4px 12px rgba(30, 64, 175, 0.3);
+    box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
     letter-spacing: 0.5px;
   }
 
@@ -820,13 +857,13 @@
     width: 140px;
     height: 140px;
     border-radius: 50%;
-    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     backdrop-filter: blur(20px);
     border: 4px solid white;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 12px 48px rgba(30, 64, 175, 0.6);
+    box-shadow: 0 12px 48px rgba(6, 182, 212, 0.6);
   }
 
   .countdown-number {
@@ -840,12 +877,12 @@
     font-size: 18px;
     font-weight: 600;
     color: white;
-    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     backdrop-filter: blur(15px);
     padding: 16px 36px;
     border-radius: 16px;
     border: 2px solid rgba(255, 255, 255, 0.2);
-    box-shadow: 0 8px 32px rgba(30, 64, 175, 0.4);
+    box-shadow: 0 8px 32px rgba(6, 182, 212, 0.4);
     letter-spacing: 0.5px;
   }
 
@@ -857,7 +894,7 @@
     align-items: center;
     justify-content: center;
     padding: 40px;
-    background: linear-gradient(135deg, var(--royal-blue-light) 0%, var(--royal-blue-dark) 100%);
+    background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary-dark) 100%);
     color: white;
   }
 
@@ -897,7 +934,7 @@
 
   .progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, white 0%, var(--royal-gold) 100%);
+    background: linear-gradient(90deg, white 0%, var(--primary-lightest) 100%);
     transition: width 0.3s ease;
     border-radius: 12px;
   }
@@ -922,9 +959,9 @@
     justify-content: space-between;
     align-items: center;
     padding: 24px 28px;
-    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
     color: white;
-    box-shadow: 0 4px 16px rgba(30, 64, 175, 0.2);
+    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.2);
   }
 
   .header-left {
@@ -970,7 +1007,7 @@
 
   .btn-small:hover {
     background: white;
-    color: var(--royal-blue);
+    color: var(--primary);
     border-color: white;
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(255, 255, 255, 0.3);
@@ -1003,22 +1040,22 @@
     color: #64748b;
     font-size: 14px;
     font-weight: 500;
-    background: rgba(30, 64, 175, 0.03);
-    border-top: 1px solid rgba(30, 64, 175, 0.08);
+    background: rgba(6, 182, 212, 0.03);
+    border-top: 1px solid rgba(6, 182, 212, 0.08);
   }
 
   .click-hint {
     text-align: center;
     padding: 24px 32px;
     margin: 0;
-    background: linear-gradient(135deg, rgba(30, 64, 175, 0.05) 0%, rgba(30, 58, 138, 0.05) 100%);
-    border-top: 2px solid rgba(30, 64, 175, 0.1);
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.05) 0%, rgba(8, 145, 178, 0.05) 100%);
+    border-top: 2px solid rgba(6, 182, 212, 0.1);
   }
 
   .hint-text {
     font-size: 16px;
     font-weight: 600;
-    color: var(--royal-blue);
+    color: var(--primary);
     margin: 0 0 12px 0;
     letter-spacing: 0.3px;
   }
@@ -1225,6 +1262,10 @@
     background: rgba(6, 182, 212, 0.05);
     border-radius: 8px;
     border-left: 3px solid var(--turquoise-lighter);
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
   }
 
   .chunk-item[data-status="playing"] .chunk-preview {
