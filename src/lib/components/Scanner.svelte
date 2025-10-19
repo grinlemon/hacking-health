@@ -26,6 +26,16 @@
   let showDebug = $state(false);
   let countdownSeconds = $state(0);
   let countdownInterval = $state<number | null>(null);
+  
+  // Gestion du streaming audio
+  let audioChunks = $state<string[]>([]);
+  let currentChunkIndex = $state(0);
+  let isGeneratingAudio = $state(false);
+  let audioQueue = $state<string[]>([]);
+  
+  // Suivi détaillé pour le debug
+  type ChunkStatus = 'waiting' | 'generating' | 'ready' | 'playing' | 'played';
+  let chunkStatuses = $state<ChunkStatus[]>([]);
 
   // Démarrer la caméra automatiquement
   async function initCamera(): Promise<void> {
@@ -110,7 +120,96 @@
     }
   }
 
-  // Générer et lire l'audio avec ElevenLabs
+  // Diviser le texte en chunks pour le streaming
+  function splitTextIntoChunks(text: string, chunkSize: number = 500): string[] {
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    const chunks: string[] = [];
+    let currentChunk = '';
+
+    for (const sentence of sentences) {
+      if ((currentChunk + sentence).length > chunkSize && currentChunk.length > 0) {
+        chunks.push(currentChunk.trim());
+        currentChunk = sentence;
+      } else {
+        currentChunk += sentence;
+      }
+    }
+
+    if (currentChunk.trim().length > 0) {
+      chunks.push(currentChunk.trim());
+    }
+
+    // Initialiser les statuts
+    chunkStatuses = chunks.map(() => 'waiting' as ChunkStatus);
+
+    return chunks;
+  }
+
+  // Générer l'audio d'un chunk
+  async function generateAudioChunk(text: string, index: number): Promise<string> {
+    chunkStatuses[index] = 'generating';
+    
+    const response = await fetch('/api/elevenlabs-tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+
+    if (!response.ok) {
+      throw new Error('Erreur génération audio');
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    
+    chunkStatuses[index] = 'ready';
+    
+    return url;
+  }
+
+  // Lire le prochain chunk
+  async function playNextChunk(): Promise<void> {
+    if (!audioElement) return;
+
+    // Marquer le chunk précédent comme joué
+    if (currentChunkIndex > 0) {
+      chunkStatuses[currentChunkIndex - 1] = 'played';
+    }
+
+    // Si on a des chunks en attente dans la queue
+    if (audioQueue.length > 0) {
+      const nextUrl = audioQueue.shift()!;
+      audioElement.src = nextUrl;
+      await audioElement.play();
+      currentChunkIndex++;
+      
+      chunkStatuses[currentChunkIndex] = 'playing';
+      statusMessage = `🔊 Lecture en cours (${currentChunkIndex}/${audioChunks.length})`;
+    } else if (currentChunkIndex < audioChunks.length && !isGeneratingAudio) {
+      // Sinon, on attend que le prochain chunk soit généré
+      statusMessage = '⏳ Chargement du prochain segment...';
+    }
+  }
+
+  // Générer tous les chunks en arrière-plan
+  async function generateAllChunks(): Promise<void> {
+    isGeneratingAudio = true;
+    
+    for (let i = 1; i < audioChunks.length; i++) {
+      try {
+        const audioUrl = await generateAudioChunk(audioChunks[i], i);
+        audioQueue.push(audioUrl);
+        console.log(`✅ Chunk ${i + 1}/${audioChunks.length} généré`);
+      } catch (err) {
+        console.error(`Erreur chunk ${i}:`, err);
+      }
+    }
+    
+    isGeneratingAudio = false;
+    console.log('✅ Tous les chunks audio générés');
+  }
+
+  // Générer et lire l'audio avec streaming
   async function playAudio(): Promise<void> {
     if (!extractedText) return;
 
@@ -122,30 +221,50 @@
         return;
       }
 
-      // Générer l'audio si pas déjà fait
-      if (!audioUrl) {
-        statusMessage = '🎙️ ElevenLabs génère l\'audio...';
+      // Si c'est une nouvelle lecture
+      if (audioChunks.length === 0) {
+        statusMessage = '🎙️ Préparation de l\'audio...';
         
-        const response = await fetch('/api/elevenlabs-tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: extractedText })
-        });
-
-        if (!response.ok) {
-          throw new Error('Erreur génération audio ElevenLabs');
+        // Diviser le texte en chunks
+        audioChunks = splitTextIntoChunks(extractedText, 500);
+        console.log(`📦 Texte divisé en ${audioChunks.length} chunks`);
+        
+        // Générer et lire le premier chunk immédiatement
+        currentChunkIndex = 0;
+        const firstChunkUrl = await generateAudioChunk(audioChunks[0], 0);
+        
+        if (audioElement) {
+          audioElement.src = firstChunkUrl;
+          await audioElement.play();
+          appState = 'playing';
+          chunkStatuses[0] = 'playing';
+          statusMessage = `🔊 Lecture en cours (1/${audioChunks.length})`;
         }
-
-        const blob = await response.blob();
-        audioUrl = URL.createObjectURL(blob);
-      }
-
-      // Lire
-      if (audioElement && audioUrl) {
-        audioElement.src = audioUrl;
-        await audioElement.play();
-        appState = 'playing';
-        statusMessage = '🔊 Lecture en cours';
+        
+        // Générer les autres chunks en arrière-plan
+        if (audioChunks.length > 1) {
+          generateAllChunks();
+        }
+      } else {
+        // Relire depuis le début
+        currentChunkIndex = 0;
+        audioQueue = []; // Reset la queue
+        
+        // Régénérer tous les chunks
+        audioChunks = splitTextIntoChunks(extractedText, 500);
+        const firstChunkUrl = await generateAudioChunk(audioChunks[0], 0);
+        
+        if (audioElement) {
+          audioElement.src = firstChunkUrl;
+          await audioElement.play();
+          appState = 'playing';
+          chunkStatuses[0] = 'playing';
+          statusMessage = `🔊 Lecture en cours (1/${audioChunks.length})`;
+        }
+        
+        if (audioChunks.length > 1) {
+          generateAllChunks();
+        }
       }
 
     } catch (err) {
@@ -170,10 +289,18 @@
     statusMessage = '';
     progressPercent = 0;
     
+    // Nettoyer les URLs audio
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
       audioUrl = null;
     }
+    
+    audioQueue.forEach(url => URL.revokeObjectURL(url));
+    audioQueue = [];
+    audioChunks = [];
+    currentChunkIndex = 0;
+    isGeneratingAudio = false;
+    chunkStatuses = [];
     
     if (audioElement) {
       audioElement.pause();
@@ -183,19 +310,39 @@
     initCamera();
   }
 
-  // Fin de lecture
-  function handleAudioEnd(): void {
-    appState = 'ready';
-    statusMessage = 'Lecture terminée';
+  // Fin de lecture d'un chunk
+  async function handleAudioEnd(): Promise<void> {
+    // Marquer le chunk actuel comme joué
+    if (currentChunkIndex >= 0 && currentChunkIndex < chunkStatuses.length) {
+      chunkStatuses[currentChunkIndex] = 'played';
+    }
+    
+    // Si ce n'est pas le dernier chunk, lire le suivant
+    if (currentChunkIndex < audioChunks.length - 1) {
+      await playNextChunk();
+    } else {
+      // Tous les chunks ont été lus
+      appState = 'ready';
+      statusMessage = '✅ Lecture terminée';
+    }
   }
 
-  // Gestion des clics tactiles
-  function handleScreenClick(event: MouseEvent): void {
-    // Ignorer les événements tactiles
-    if (event.type === 'touchend' || event.type === 'touchstart') {
+  // Gestion des clics (souris uniquement)
+  function handleScreenClick(event: MouseEvent | PointerEvent): void {
+    // Bloquer complètement les événements tactiles
+    if ('pointerType' in event && event.pointerType === 'touch') {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    
+    if (event.type.includes('touch')) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
+    // Uniquement les clics de souris (pointerType === 'mouse')
     if (appState === 'camera') {
       // En mode caméra, cliquer n'importe où lance le traitement OCR uniquement
       startProcessing();
@@ -209,11 +356,17 @@
   }
 
   // Gestion du clic droit pour relancer l'analyse avec countdown
-  async function handleContextMenu(event: MouseEvent): Promise<void> {
+  async function handleContextMenu(event: MouseEvent | PointerEvent): Promise<void> {
     event.preventDefault(); // Empêche le menu contextuel
 
-    // Ignorer les événements tactiles
+    // Bloquer complètement les événements tactiles
+    if ('pointerType' in event && event.pointerType === 'touch') {
+      event.stopPropagation();
+      return;
+    }
+    
     if (event.type.includes('touch')) {
+      event.stopPropagation();
       return;
     }
 
@@ -232,6 +385,14 @@
       extractedText = '';
       rawOcrText = '';
       progressPercent = 0;
+      
+      // Nettoyer les chunks audio
+      audioQueue.forEach(url => URL.revokeObjectURL(url));
+      audioQueue = [];
+      audioChunks = [];
+      currentChunkIndex = 0;
+      isGeneratingAudio = false;
+      chunkStatuses = [];
       
       // Lancer le countdown de 3 secondes
       countdownSeconds = 3;
@@ -350,6 +511,7 @@
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
+      audioQueue.forEach(url => URL.revokeObjectURL(url));
       if (countdownInterval) {
         clearInterval(countdownInterval);
       }
@@ -364,7 +526,14 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="app" onclick={handleScreenClick} oncontextmenu={handleContextMenu}>
+<div 
+  class="app" 
+  onclick={handleScreenClick} 
+  oncontextmenu={handleContextMenu}
+  ontouchstart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  ontouchend={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  ontouchmove={(e) => { e.preventDefault(); e.stopPropagation(); }}
+>
   <!-- Caméra plein écran -->
   {#if appState === 'camera'}
     <div class="camera-fullscreen">
@@ -445,6 +614,47 @@
             <p><strong>Texte extrait par Llama Vision :</strong></p>
             <pre>{rawOcrText}</pre>
           </div>
+
+          {#if audioChunks.length > 0}
+            <div class="audio-debug-section">
+              <h3>🎵 Streaming Audio - État en temps réel</h3>
+              <div class="audio-stats">
+                <span class="stat-item">📦 Total: {audioChunks.length} segments</span>
+                <span class="stat-item">▶️ En lecture: {currentChunkIndex + 1}</span>
+                <span class="stat-item">✅ Prêts: {chunkStatuses.filter(s => s === 'ready').length}</span>
+                <span class="stat-item">⏳ En attente: {chunkStatuses.filter(s => s === 'waiting').length}</span>
+              </div>
+
+              <div class="chunks-list">
+                {#each audioChunks as chunk, index}
+                  <div class="chunk-item" data-status={chunkStatuses[index]}>
+                    <div class="chunk-header">
+                      <span class="chunk-number">Segment {index + 1}</span>
+                      <span class="chunk-status">
+                        {#if chunkStatuses[index] === 'waiting'}
+                          ⏳ En attente
+                        {:else if chunkStatuses[index] === 'generating'}
+                          🔄 Génération...
+                        {:else if chunkStatuses[index] === 'ready'}
+                          ✅ Prêt
+                        {:else if chunkStatuses[index] === 'playing'}
+                          ▶️ En lecture
+                        {:else if chunkStatuses[index] === 'played'}
+                          ✓ Écouté
+                        {/if}
+                      </span>
+                    </div>
+                    <div class="chunk-preview">
+                      {chunk.substring(0, 100)}{chunk.length > 100 ? '...' : ''}
+                    </div>
+                    <div class="chunk-info">
+                      {chunk.length} caractères
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -455,9 +665,12 @@
       <div class="click-hint">
         {#if appState === 'ready'}
           <p class="hint-text">👆 Clic gauche : lire l'audio | Clic droit : nouvelle page</p>
-          <p class="audio-warning">⚠️ Audio consomme des tokens</p>
+          <p class="audio-warning">⚠️ Audio consomme des tokens • Lecture continue</p>
         {:else if appState === 'playing'}
           <p class="hint-text">👆 Clic gauche : pause | Clic droit : nouvelle page</p>
+          {#if isGeneratingAudio}
+            <p class="audio-info">🔄 Génération des segments suivants...</p>
+          {/if}
         {:else if appState === 'paused'}
           <p class="hint-text">👆 Clic gauche : reprendre | Clic droit : nouvelle page</p>
         {/if}
@@ -477,6 +690,18 @@
 </div>
 
 <style>
+  :root {
+    --royal-blue: #1e40af;
+    --royal-blue-dark: #1e3a8a;
+    --royal-blue-light: #3b82f6;
+    --royal-blue-lighter: #60a5fa;
+    --royal-gold: #fbbf24;
+    --turquoise: #06b6d4;
+    --turquoise-dark: #0891b2;
+    --turquoise-light: #22d3ee;
+    --turquoise-lighter: #67e8f9;
+  }
+
   .app {
     position: fixed;
     inset: 0;
@@ -485,6 +710,12 @@
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+    pointer-events: auto;
+  }
+
+  * {
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .camera-fullscreen {
@@ -543,15 +774,20 @@
     position: relative;
     z-index: 20;
     text-align: center;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(10px);
-    padding: 20px 40px;
-    border-radius: 20px;
+    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    backdrop-filter: blur(15px);
+    padding: 24px 48px;
+    border-radius: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 8px 32px rgba(30, 64, 175, 0.4);
   }
 
   .camera-hint .hint-text {
     color: white;
     margin: 0;
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
   }
 
   .version-corner {
@@ -559,14 +795,16 @@
     top: 20px;
     right: 20px;
     z-index: 30;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: white;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--royal-blue);
     backdrop-filter: blur(10px);
-    padding: 6px 14px;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 8px 16px;
+    border-radius: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    box-shadow: 0 4px 12px rgba(30, 64, 175, 0.3);
+    letter-spacing: 0.5px;
   }
 
   .countdown-overlay {
@@ -575,50 +813,40 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 20px;
+    gap: 24px;
   }
 
   .countdown-circle {
-    width: 120px;
-    height: 120px;
+    width: 140px;
+    height: 140px;
     border-radius: 50%;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(15px);
+    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    backdrop-filter: blur(20px);
     border: 4px solid white;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
-    animation: pulse-countdown 1s infinite;
-  }
-
-  @keyframes pulse-countdown {
-    0%, 100% { 
-      transform: scale(1);
-      box-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
-    }
-    50% { 
-      transform: scale(1.1);
-      box-shadow: 0 0 50px rgba(255, 255, 255, 0.8);
-    }
+    box-shadow: 0 12px 48px rgba(30, 64, 175, 0.6);
   }
 
   .countdown-number {
-    font-size: 64px;
+    font-size: 72px;
     font-weight: 700;
     color: white;
-    text-shadow: 0 0 20px rgba(255, 255, 255, 0.8);
+    text-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   }
 
   .countdown-text {
-    font-size: 20px;
+    font-size: 18px;
     font-weight: 600;
     color: white;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(10px);
-    padding: 12px 30px;
-    border-radius: 20px;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
+    backdrop-filter: blur(15px);
+    padding: 16px 36px;
+    border-radius: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 8px 32px rgba(30, 64, 175, 0.4);
+    letter-spacing: 0.5px;
   }
 
   .processing-screen {
@@ -629,7 +857,7 @@
     align-items: center;
     justify-content: center;
     padding: 40px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, var(--royal-blue-light) 0%, var(--royal-blue-dark) 100%);
     color: white;
   }
 
@@ -652,28 +880,32 @@
     font-size: 24px;
     margin-bottom: 30px;
     text-align: center;
+    font-weight: 600;
+    letter-spacing: 0.5px;
   }
 
   .progress-bar {
     width: 100%;
     max-width: 400px;
-    height: 8px;
+    height: 10px;
     background: rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
+    border-radius: 12px;
     overflow: hidden;
-    margin-bottom: 10px;
+    margin-bottom: 16px;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
   }
 
   .progress-fill {
     height: 100%;
-    background: white;
-    transition: width 0.3s;
-    border-radius: 10px;
+    background: linear-gradient(90deg, white 0%, var(--royal-gold) 100%);
+    transition: width 0.3s ease;
+    border-radius: 12px;
   }
 
   .progress-text {
     font-size: 20px;
     font-weight: 600;
+    letter-spacing: 0.5px;
   }
 
   .result-screen {
@@ -689,29 +921,33 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 24px 28px;
+    background: linear-gradient(135deg, var(--royal-blue) 0%, var(--royal-blue-dark) 100%);
     color: white;
+    box-shadow: 0 4px 16px rgba(30, 64, 175, 0.2);
   }
 
   .header-left {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 16px;
   }
 
   .header h1 {
-    font-size: 24px;
+    font-size: 26px;
     margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.5px;
   }
 
   .version-badge {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    background: rgba(255, 255, 255, 0.2);
-    padding: 4px 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.15);
+    padding: 6px 14px;
+    border-radius: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    letter-spacing: 0.5px;
   }
 
   .header-buttons {
@@ -720,68 +956,87 @@
   }
 
   .btn-small {
-    padding: 10px 20px;
-    background: rgba(255, 255, 255, 0.2);
+    padding: 12px 24px;
+    background: rgba(255, 255, 255, 0.15);
     color: white;
-    border: 2px solid white;
-    border-radius: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-radius: 12px;
     font-weight: 600;
+    font-size: 14px;
     cursor: pointer;
-    transition: all 0.3s;
+    transition: all 0.2s ease;
+    letter-spacing: 0.3px;
   }
 
   .btn-small:hover {
     background: white;
-    color: #667eea;
+    color: var(--royal-blue);
+    border-color: white;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(255, 255, 255, 0.3);
+  }
+
+  .btn-small:active {
+    transform: translateY(0);
   }
 
   .text-display {
     flex: 1;
     overflow-y: auto;
-    padding: 30px;
-    background: #F9FAFB;
+    padding: 40px 32px;
+    background: #f8fafc;
   }
 
   .text-display p {
-    line-height: 1.8;
+    line-height: 1.9;
     font-size: 18px;
-    color: #374151;
+    color: #1e293b;
     white-space: pre-wrap;
     max-width: 800px;
     margin: 0 auto;
+    font-weight: 400;
   }
 
   .status-small {
     text-align: center;
-    padding: 10px;
-    color: #6B7280;
+    padding: 16px;
+    color: #64748b;
     font-size: 14px;
+    font-weight: 500;
+    background: rgba(30, 64, 175, 0.03);
+    border-top: 1px solid rgba(30, 64, 175, 0.08);
   }
 
   .click-hint {
     text-align: center;
-    padding: 20px;
-    margin: 20px 0;
+    padding: 24px 32px;
+    margin: 0;
+    background: linear-gradient(135deg, rgba(30, 64, 175, 0.05) 0%, rgba(30, 58, 138, 0.05) 100%);
+    border-top: 2px solid rgba(30, 64, 175, 0.1);
   }
 
   .hint-text {
-    font-size: 20px;
+    font-size: 16px;
     font-weight: 600;
-    color: #667eea;
-    animation: bounce 2s infinite;
-    margin: 0 0 10px 0;
+    color: var(--royal-blue);
+    margin: 0 0 12px 0;
+    letter-spacing: 0.3px;
   }
 
   .audio-warning {
-    font-size: 14px;
-    color: #F59E0B;
+    font-size: 13px;
+    color: #d97706;
     font-weight: 600;
     margin: 0;
+    letter-spacing: 0.2px;
   }
 
-  @keyframes bounce {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-10px); }
+  .audio-info {
+    font-size: 13px;
+    color: #059669;
+    font-weight: 600;
+    margin: 8px 0 0 0;
+    letter-spacing: 0.2px;
   }
 
   .hidden {
@@ -789,16 +1044,19 @@
   }
 
   .debug-section {
-    background: #FEF3C7;
-    padding: 20px;
-    border-bottom: 2px solid #F59E0B;
-    max-height: 400px;
+    background: #ecfeff;
+    padding: 24px;
+    border-bottom: 3px solid var(--turquoise);
+    max-height: 600px;
     overflow-y: auto;
   }
 
   .debug-section h3 {
-    margin: 0 0 15px 0;
-    color: #92400E;
+    margin: 0 0 16px 0;
+    color: var(--turquoise-dark);
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    font-size: 18px;
   }
 
   .debug-images {
@@ -815,13 +1073,14 @@
   .debug-image-container p {
     margin-bottom: 10px;
     font-weight: 600;
-    color: #92400E;
+    color: var(--turquoise-dark);
   }
 
   .debug-image-container img {
     width: 100%;
-    border: 2px solid #F59E0B;
-    border-radius: 8px;
+    border: 2px solid var(--turquoise);
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
   }
 
   .debug-text {
@@ -831,7 +1090,7 @@
   .debug-text p {
     font-weight: 600;
     margin-bottom: 10px;
-    color: #92400E;
+    color: var(--turquoise-dark);
   }
 
   .debug-text pre {
@@ -844,5 +1103,140 @@
     word-wrap: break-word;
     max-height: 200px;
     overflow-y: auto;
+    border: 1px solid var(--turquoise-lighter);
+  }
+
+  .audio-debug-section {
+    margin-top: 24px;
+    padding-top: 24px;
+    border-top: 2px solid var(--turquoise-lighter);
+  }
+
+  .audio-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding: 16px;
+    background: white;
+    border-radius: 12px;
+    border: 2px solid var(--turquoise-lighter);
+  }
+
+  .stat-item {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--turquoise-dark);
+    background: var(--turquoise-lighter);
+    padding: 8px 16px;
+    border-radius: 8px;
+    letter-spacing: 0.3px;
+  }
+
+  .chunks-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .chunk-item {
+    background: white;
+    border-radius: 12px;
+    padding: 16px;
+    border: 2px solid var(--turquoise-lighter);
+    transition: all 0.3s ease;
+  }
+
+  .chunk-item[data-status="waiting"] {
+    border-color: #cbd5e1;
+    opacity: 0.7;
+  }
+
+  .chunk-item[data-status="generating"] {
+    border-color: var(--turquoise);
+    background: linear-gradient(135deg, #ffffff 0%, #f0fdfa 100%);
+    box-shadow: 0 4px 12px rgba(6, 182, 212, 0.2);
+  }
+
+  .chunk-item[data-status="ready"] {
+    border-color: var(--turquoise);
+    background: linear-gradient(135deg, #ffffff 0%, #ecfeff 100%);
+  }
+
+  .chunk-item[data-status="playing"] {
+    border-color: var(--turquoise-dark);
+    background: linear-gradient(135deg, var(--turquoise-lighter) 0%, var(--turquoise-light) 100%);
+    box-shadow: 0 8px 24px rgba(6, 182, 212, 0.4);
+    transform: scale(1.02);
+  }
+
+  .chunk-item[data-status="played"] {
+    border-color: #10b981;
+    background: linear-gradient(135deg, #ffffff 0%, #d1fae5 100%);
+    opacity: 0.8;
+  }
+
+  .chunk-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .chunk-number {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--turquoise-dark);
+    letter-spacing: 0.3px;
+  }
+
+  .chunk-status {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 8px;
+    background: var(--turquoise-lighter);
+    color: var(--turquoise-dark);
+    letter-spacing: 0.2px;
+  }
+
+  .chunk-item[data-status="playing"] .chunk-status {
+    background: white;
+    color: var(--turquoise-dark);
+    animation: pulse-status 1.5s infinite;
+  }
+
+  @keyframes pulse-status {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  .chunk-item[data-status="played"] .chunk-status {
+    background: #d1fae5;
+    color: #059669;
+  }
+
+  .chunk-preview {
+    font-size: 13px;
+    line-height: 1.6;
+    color: #334155;
+    margin-bottom: 8px;
+    padding: 12px;
+    background: rgba(6, 182, 212, 0.05);
+    border-radius: 8px;
+    border-left: 3px solid var(--turquoise-lighter);
+  }
+
+  .chunk-item[data-status="playing"] .chunk-preview {
+    background: rgba(255, 255, 255, 0.8);
+    border-left-color: var(--turquoise-dark);
+    font-weight: 500;
+  }
+
+  .chunk-info {
+    font-size: 11px;
+    color: #64748b;
+    font-weight: 500;
+    letter-spacing: 0.2px;
   }
 </style>
