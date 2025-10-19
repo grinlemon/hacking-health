@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
 
   // Version de l'application
-  const APP_VERSION = 'v0.0.19';
+  const APP_VERSION = 'v0.0.20';
 
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
@@ -849,21 +849,19 @@
     class="hidden"
   ></audio>
 
-  <!-- Bouton flottant pour le tactile (toujours visible) -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <button 
-    class="floating-scan-button"
-    onclick={(e) => { e.stopPropagation(); handleRightClickAction(e); }}
-    ontouchstart={(e) => { e.stopPropagation(); }}
-    ontouchend={(e) => { e.stopPropagation(); handleRightClickAction(e); }}
-  >
-    {#if appState === 'camera'}
+  <!-- Bouton flottant pour le tactile (uniquement en mode caméra) -->
+  {#if appState === 'camera'}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <button 
+      class="floating-scan-button"
+      onclick={(e) => { e.stopPropagation(); handleRightClickAction(e); }}
+      ontouchstart={(e) => { e.stopPropagation(); }}
+      ontouchend={(e) => { e.stopPropagation(); handleRightClickAction(e); }}
+    >
       {countdownSeconds > 0 ? countdownSeconds : '📸'}
-    {:else}
-      {countdownSeconds > 0 ? countdownSeconds : '🔄'}
-    {/if}
-  </button>
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -883,7 +881,6 @@
     position: fixed;
     inset: 0;
     background: #000;
-    touch-action: none;
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
@@ -891,7 +888,6 @@
   }
 
   * {
-    touch-action: none;
     -webkit-tap-highlight-color: transparent;
   }
 
@@ -903,6 +899,7 @@
     align-items: flex-end;
     justify-content: center;
     padding-bottom: 40px;
+    touch-action: none;
   }
 
   video {
@@ -1059,6 +1056,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    touch-action: auto;
   }
 
   .header {
@@ -1129,6 +1127,8 @@
     overflow-y: auto;
     padding: 40px 32px;
     background: #f8fafc;
+    touch-action: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .text-display p {
