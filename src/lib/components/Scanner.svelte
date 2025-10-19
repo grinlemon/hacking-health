@@ -1204,7 +1204,6 @@
     border-color: var(--turquoise-dark);
     background: linear-gradient(135deg, var(--turquoise-lighter) 0%, var(--turquoise-light) 100%);
     box-shadow: 0 8px 24px rgba(6, 182, 212, 0.4);
-    transform: scale(1.02);
   }
 
   .chunk-item[data-status="played"] {
