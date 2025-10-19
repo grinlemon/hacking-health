@@ -395,14 +395,14 @@
 
   // Gestion des clics gauche (souris uniquement) - PLAY/PAUSE uniquement
   function handleScreenClick(event: MouseEvent | PointerEvent): void {
-    // Bloquer complètement les événements tactiles
-    if ('pointerType' in event && event.pointerType === 'touch') {
+    // Bloquer les événements tactiles UNIQUEMENT en mode caméra
+    if (appState === 'camera' && 'pointerType' in event && event.pointerType === 'touch') {
       event.preventDefault();
       event.stopPropagation();
       return;
     }
     
-    if (event.type.includes('touch')) {
+    if (appState === 'camera' && event.type.includes('touch')) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -491,13 +491,13 @@
   async function handleContextMenu(event: MouseEvent | PointerEvent): Promise<void> {
     event.preventDefault(); // Empêche le menu contextuel
 
-    // Bloquer complètement les événements tactiles
-    if ('pointerType' in event && event.pointerType === 'touch') {
+    // Bloquer les événements tactiles UNIQUEMENT en mode caméra
+    if (appState === 'camera' && 'pointerType' in event && event.pointerType === 'touch') {
       event.stopPropagation();
       return;
     }
     
-    if (event.type.includes('touch')) {
+    if (appState === 'camera' && event.type.includes('touch')) {
       event.stopPropagation();
       return;
     }
@@ -692,13 +692,31 @@
   class="app" 
   onclick={handleScreenClick} 
   oncontextmenu={handleContextMenu}
-  ontouchstart={(e) => { e.preventDefault(); e.stopPropagation(); }}
-  ontouchend={(e) => { e.preventDefault(); e.stopPropagation(); }}
-  ontouchmove={(e) => { e.preventDefault(); e.stopPropagation(); }}
 >
   <!-- Caméra plein écran -->
   {#if appState === 'camera'}
-    <div class="camera-fullscreen">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="camera-fullscreen"
+      ontouchstart={(e) => { 
+        // Autoriser uniquement le bouton flottant
+        if (!(e.target as HTMLElement).closest('.floating-scan-button')) {
+          e.preventDefault(); 
+          e.stopPropagation(); 
+        }
+      }}
+      ontouchend={(e) => { 
+        if (!(e.target as HTMLElement).closest('.floating-scan-button')) {
+          e.preventDefault(); 
+          e.stopPropagation(); 
+        }
+      }}
+      ontouchmove={(e) => { 
+        if (!(e.target as HTMLElement).closest('.floating-scan-button')) {
+          e.preventDefault(); 
+          e.stopPropagation(); 
+        }
+      }}
+    >
       <!-- svelte-ignore a11y_missing_attribute -->
       <video bind:this={video} autoplay playsinline></video>
       <canvas bind:this={canvas} class="hidden"></canvas>
