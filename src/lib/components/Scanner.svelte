@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
 
   // Version de l'application
-  const APP_VERSION = 'v0.0.17';
+  const APP_VERSION = 'v0.0.18';
 
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
@@ -393,7 +393,7 @@
     }
   }
 
-  // Gestion des clics (souris uniquement)
+  // Gestion des clics gauche (souris uniquement) - PLAY/PAUSE uniquement
   function handleScreenClick(event: MouseEvent | PointerEvent): void {
     // Bloquer complètement les événements tactiles
     if ('pointerType' in event && event.pointerType === 'touch') {
@@ -409,11 +409,11 @@
     }
 
     // Uniquement les clics de souris (pointerType === 'mouse')
+    // En mode caméra, le clic gauche ne fait rien (on utilise le clic droit pour scanner)
     if (appState === 'camera') {
-      // En mode caméra, cliquer n'importe où lance le traitement OCR uniquement
-      startProcessing();
+      return;
     } else if (appState === 'ready' || appState === 'paused') {
-      // En mode ready ou pause, cliquer n'importe où lance/reprend l'audio
+      // En mode ready ou pause, cliquer lance/reprend l'audio
       playAudio();
     } else if (appState === 'playing') {
       // En lecture, cliquer met en pause
@@ -421,7 +421,7 @@
     }
   }
 
-  // Gestion du clic droit pour relancer l'analyse avec countdown
+  // Gestion du clic droit pour lancer le scan (en mode caméra) ou nouvelle page
   async function handleContextMenu(event: MouseEvent | PointerEvent): Promise<void> {
     event.preventDefault(); // Empêche le menu contextuel
 
@@ -436,7 +436,13 @@
       return;
     }
 
-    // Si on est en lecture/pause/ready, on lance le countdown
+    // En mode caméra, le clic droit lance directement le scan
+    if (appState === 'camera') {
+      startProcessing();
+      return;
+    }
+
+    // Si on est en lecture/pause/ready, on lance le countdown pour nouvelle page
     if (appState === 'ready' || appState === 'playing' || appState === 'paused') {
       // Nettoyer l'ancien audio
       if (audioUrl) {
@@ -621,7 +627,7 @@
         </div>
       {:else}
         <div class="camera-hint">
-          <p class="hint-text">Cliquez n'importe où pour capturer</p>
+          <p class="hint-text">Clic droit pour capturer</p>
         </div>
       {/if}
       
@@ -734,7 +740,7 @@
 
       <div class="click-hint">
         {#if appState === 'ready'}
-          <p class="hint-text">Clic gauche : lire l'audio | Clic droit : nouvelle page</p>
+          <p class="hint-text">Clic gauche : lire | Clic droit : nouvelle page</p>
           <p class="audio-warning">Audio consomme des tokens • Lecture continue</p>
         {:else if appState === 'playing'}
           <p class="hint-text">Clic gauche : pause | Clic droit : nouvelle page</p>
