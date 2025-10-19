@@ -2,7 +2,7 @@
   import { browser } from '$app/environment';
 
   // Version de l'application
-  const APP_VERSION = 'v0.0.18';
+  const APP_VERSION = 'v0.0.19';
 
   // Variables réactives Svelte 5
   let video = $state<HTMLVideoElement>();
@@ -421,8 +421,93 @@
     }
   }
 
+  // Fonction pour simuler le clic droit (utilisée par le bouton tactile)
+  async function handleRightClickAction(event?: Event): Promise<void> {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    // En mode caméra, le clic droit lance directement le scan
+    if (appState === 'camera') {
+      startProcessing();
+      return;
+    }
+
+    // Si on est en lecture/pause/ready, on lance le countdown pour nouvelle page
+    if (appState === 'ready' || appState === 'playing' || appState === 'paused') {
+      // Nettoyer l'ancien audio
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+        audioUrl = null;
+      }
+      if (audioElement) {
+        audioElement.pause();
+        audioElement.src = '';
+      }
+      
+      extractedText = '';
+      rawOcrText = '';
+      progressPercent = 0;
+      
+      // Nettoyer les chunks audio
+      generatedAudioUrls.forEach(url => {
+        if (url) URL.revokeObjectURL(url);
+      });
+      generatedAudioUrls = [];
+      audioQueue = [];
+      audioChunks = [];
+      currentChunkIndex = 0;
+      isGeneratingAudio = false;
+      chunkStatuses = [];
+      
+      // Lancer le countdown de 3 secondes
+      countdownSeconds = 3;
+      statusMessage = `Nouvelle capture dans ${countdownSeconds}s...`;
+      
+      // Relancer la caméra en arrière-plan
+      await initCamera();
+      
+      // Countdown
+      countdownInterval = window.setInterval(() => {
+        countdownSeconds--;
+        
+        if (countdownSeconds > 0) {
+          statusMessage = `Nouvelle capture dans ${countdownSeconds}s...`;
+        } else {
+          // Countdown terminé, lancer la capture
+          if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+          }
+          countdownSeconds = 0;
+          startProcessing();
+        }
+      }, 1000);
+    }
+  }
+
   // Gestion du clic droit pour lancer le scan (en mode caméra) ou nouvelle page
   async function handleContextMenu(event: MouseEvent | PointerEvent): Promise<void> {
+    event.preventDefault(); // Empêche le menu contextuel
+
+    // Bloquer complètement les événements tactiles
+    if ('pointerType' in event && event.pointerType === 'touch') {
+      event.stopPropagation();
+      return;
+    }
+    
+    if (event.type.includes('touch')) {
+      event.stopPropagation();
+      return;
+    }
+
+    // Utiliser la fonction commune
+    await handleRightClickAction();
+  }
+
+  // ANCIENNE VERSION - gardée pour référence mais pas utilisée
+  async function handleContextMenu_OLD(event: MouseEvent | PointerEvent): Promise<void> {
     event.preventDefault(); // Empêche le menu contextuel
 
     // Bloquer complètement les événements tactiles
@@ -763,6 +848,22 @@
     onended={handleAudioEnd}
     class="hidden"
   ></audio>
+
+  <!-- Bouton flottant pour le tactile (toujours visible) -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <button 
+    class="floating-scan-button"
+    onclick={(e) => { e.stopPropagation(); handleRightClickAction(e); }}
+    ontouchstart={(e) => { e.stopPropagation(); }}
+    ontouchend={(e) => { e.stopPropagation(); handleRightClickAction(e); }}
+  >
+    {#if appState === 'camera'}
+      {countdownSeconds > 0 ? countdownSeconds : '📸'}
+    {:else}
+      {countdownSeconds > 0 ? countdownSeconds : '🔄'}
+    {/if}
+  </button>
 </div>
 
 <style>
@@ -1284,5 +1385,49 @@
     color: #64748b;
     font-weight: 500;
     letter-spacing: 0.2px;
+  }
+
+  /* Bouton flottant pour le tactile */
+  .floating-scan-button {
+    position: fixed;
+    bottom: 32px;
+    right: 32px;
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--turquoise) 0%, var(--turquoise-dark) 100%);
+    border: 4px solid white;
+    box-shadow: 0 8px 32px rgba(6, 182, 212, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    cursor: pointer;
+    z-index: 1000;
+    transition: all 0.3s ease;
+    touch-action: auto;
+    pointer-events: auto;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .floating-scan-button:hover {
+    transform: scale(1.1);
+    box-shadow: 0 12px 48px rgba(6, 182, 212, 0.6);
+  }
+
+  .floating-scan-button:active {
+    transform: scale(0.95);
+  }
+
+  @media (max-width: 768px) {
+    .floating-scan-button {
+      bottom: 24px;
+      right: 24px;
+      width: 64px;
+      height: 64px;
+      font-size: 28px;
+    }
   }
 </style>
